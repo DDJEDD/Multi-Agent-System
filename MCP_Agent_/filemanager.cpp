@@ -3,7 +3,7 @@
 #include <QDebug>
 #include <QJsonObject>
 #include <QFile>
-
+#include <QSettings>
 void FileManager::createAndEditFile(const QString &content, const  QDir &dirEngine, const QString &fileName){
     QString fullFilePath = dirEngine.absoluteFilePath(fileName + ".md");
     QFile file(fullFilePath);
@@ -104,33 +104,4 @@ QString FileManager::getFile(const QString &fileToGet, QDir dirEngine){
     return content;
 }
 
-void FileManager::loadEnvFile(const QString &filePath) {
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        qWarning() << "Не удалось открыть .env файл:" << file.errorString();
-        return;
-    }
 
-    QTextStream in(&file);
-    while (!in.atEnd()) {
-        QString line = in.readLine().trimmed();
-
-        if (line.isEmpty() || line.startsWith('#')) {
-            continue;
-        }
-
-        int separatorIdx = line.indexOf('=');
-        if (separatorIdx == -1) continue;
-
-        QString key = line.left(separatorIdx).trimmed();
-        QString value = line.mid(separatorIdx + 1).trimmed();
-
-        if ((value.startsWith('"') && value.endsWith('"')) ||
-            (value.startsWith('\'') && value.endsWith('\''))) {
-            value = value.mid(1, value.length() - 2);
-        }
-
-        qputenv(key.toUtf8(), value.toUtf8());
-    }
-    file.close();
-}

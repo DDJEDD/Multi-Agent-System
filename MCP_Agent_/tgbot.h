@@ -18,26 +18,26 @@ class TgBot : public QObject
     Requests *requests;
     phonenumber *phone;
     agents *m_agents;
-    QString token = "8979215541:AAGMuBOHM81rE3y8R-iK7wsFuAGfTy4ckXI";
-    QString geminiKey;
+    QString token;
 
     QString host  = "api.telegram.org";
     qint64 offset = 0;
 
     void poll();
     void checkreqPhoto(const QJsonObject &response, qint64 chatId, const QString &text);
-    void reqPhotoAI(const QString &userText, qint64 chatId);
     void sendSticker(qint64 chatId, const QString &stickerId);
     void sendMessagesDelayed(qint64 chatId,const QList<DelayedMessage> &messages);
     void sendTyping(qint64 chatId);
     void sendMessage(qint64 chatId, const QString &text);
-    void reqAgent(const QString &userText, qint64 chatId,const QString &agentName,  const QByteArray &imageData = QByteArray() );
-    void checkreq(const QJsonObject &response, qint64 chatId, const QString &text, const QMap<QString, QString> &nums );
     void processPhotoMessage(const QString &fileId, const QString &text, qint64 chatId);
     void sendAnimation(qint64 chatId, const QString &animationUrl, const QString &caption);
     void downloadFile(const QString &fileId, std::function<void(const QByteArray &)> callback);
     void sendPhoto(qint64 chatId, const QString &photoUrl, const QString &caption );
 public:
     explicit TgBot(QObject *parent = nullptr);
+    void setToken(const QString &token);
+
+
+signals:
 };
 #endif // TGBOT_H

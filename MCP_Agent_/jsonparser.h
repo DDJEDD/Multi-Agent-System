@@ -9,6 +9,7 @@ struct DelayedMessage {
     QString text;
     QString stickerId;
     QString photoUrl;
+    QString code;
     int delay;
 };
 struct AgentCall {

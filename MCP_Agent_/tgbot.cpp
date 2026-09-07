@@ -1,18 +1,21 @@
 #include "tgbot.h"
-#include "filemanager.h"
 #include <QDebug>
 #include <QRegularExpression>
 #include <QRegularExpressionMatchIterator>
 #include <QTimer>
 #include <optional>
+#include <QSettings>
 
 TgBot::TgBot(QObject *parent) : QObject(parent) {
-    FileManager::loadEnvFile(".env");
-    geminiKey = qgetenv("GEMINI_API_KEY");
-    if (token.isEmpty()) {
-        qWarning() << "ВНИМАНИЕ: GEMINI_API_KEY не найден в .env файле!";
-    }
+
     phone = new phonenumber(this);
+    QSettings settings(QString(APP_SRC_DIR) + "/config.ini", QSettings::IniFormat);
+
+    QString token = settings.value("telegram_token").toString();
+    setToken(token.toUtf8());
+    if (token.isEmpty()) {
+        qWarning() << "ВНИМАНИЕ: telegram_token не найден в config.ini!";
+    }
     m_agents = new agents(this);
     connect(m_agents, &agents::requestSendMessagesDelayed,
             this, &TgBot::sendMessagesDelayed);
@@ -20,11 +23,12 @@ TgBot::TgBot(QObject *parent) : QObject(parent) {
     connect(m_agents, &agents::requestSendPhoto,
             this, &TgBot::sendPhoto);
 
-    connect(m_agents, &agents::requestSendSticker,
-            this, &TgBot::sendSticker);
-    connect(m_agents, &agents::requestReqAgent,
-            this, &TgBot::reqAgent);
     poll();
+
+}
+
+void TgBot::setToken(const QString &key){
+    token=key;
 
 }
 void TgBot::checkreqPhoto(const QJsonObject &response, qint64 chatId, const QString &prompt) {
@@ -83,35 +87,7 @@ void TgBot::downloadFile(const QString &fileId, std::function<void(const QByteAr
         });
     });
 }
-void TgBot::reqPhotoAI(const QString &userText, qint64 chatId) {
-    if (geminiKey.isEmpty()) {
-        sendMessage(chatId, "Ошибка конфигурации бота.");
-        return;
-    }
 
-    if (userText.isEmpty()) {
-        sendMessage(chatId, "Укажите описание картинки! Пример: <code>/generate неоновый город</code>");
-        return;
-    }
-
-    sendTyping(chatId);
-
-    QString aiHost = "generativelanguage.googleapis.com";
-    QString aiPath = QString("/v1beta/models/gemini-2.5-flash-image:generateContent?key=%1").arg(geminiKey);
-
-    QJsonObject body;
-    QJsonObject textPart{{"text", userText}};
-    QJsonObject contentsObj{{"parts", QJsonArray{textPart}}};
-    body["contents"] = QJsonArray{contentsObj};
-
-    QJsonObject generationConfig;
-    generationConfig["responseModalities"] = QJsonArray{"IMAGE"};
-    body["generationConfig"] = generationConfig;
-
-    requests->apiCall(this, aiHost, aiPath, body, {}, [this, chatId, userText](const QJsonObject &response) {
-        checkreqPhoto(response, chatId, userText);
-    });
-}
 void TgBot::processPhotoMessage(const QString &fileId, const QString &text, qint64 chatId) {
     qDebug() << "Получено изображение:" << fileId << "Чат:" << chatId << "Подпись:" << text;
 
@@ -122,93 +98,11 @@ void TgBot::processPhotoMessage(const QString &fileId, const QString &text, qint
             return;
         }
 
-        reqAgent(text.isEmpty() ? "Что на этой картинке?" : text, chatId, imageData);
+
+        m_agents->reqAgent(text.isEmpty() ? "Что на этой картинке?" : text,  chatId,"Главный агент",MessageSource::Telegram,0 ,imageData);
     });
 }
-void TgBot::checkreq(const QJsonObject &response, qint64 chatId, const QString &text, const QMap<QString, QString> &nums) {
 
-    QJsonArray candidates = response["candidates"].toArray();
-    if (!candidates.isEmpty()) {
-        QJsonArray parts = candidates[0].toObject()["content"].toObject()["parts"].toArray();
-        if (!parts.isEmpty()) {
-            QString aiText = parts[0].toObject()["text"].toString();
-            qDebug().noquote() << "Ответ от Gemini (текст):" << aiText;
-        }
-    }
-
-    auto optCalls = JSONParser::parse(response, nums, *phone);
-    if (!optCalls.has_value() || optCalls->isEmpty()) {
-        qWarning() << "Не удалось распарсить ответ от Gemini или стек вызовов пуст.";
-        sendMessage(chatId, "Ошибка при обработке ответа от ИИ.");
-        return;
-    }
-
-    const QList<AgentCall> &calls = *optCalls;
-    qDebug() << "[TgBot] Получено вызовов сабагентов:" << calls.size();
-
-    for (const AgentCall &call : calls) {
-        qDebug() << "  -> Запуск функции:" << call.functionName
-                 << "для агента:" << call.agentName
-                 << "ID:" << call.id;
-
-
-        this->m_agents->executeCall(call.id, call.agentName, call.args, call.functionName, chatId, text, call.role);
-    }
-}
-
-void TgBot::reqAgent(const QString &userText, qint64 chatId,const QString &agentName, const QByteArray &imageData) {
-
-
-    if (geminiKey.isEmpty()) {
-        qWarning() << "GEMINI_API_KEY не установлен!";
-        sendMessage(chatId, "Ошибка конфигурации бота.");
-        return;
-    }
-    QString aiHost = "generativelanguage.googleapis.com";
-    QString aiPath = QString("/v1beta/models/gemini-3.6-flash:generateContent?key=%1").arg(geminiKey);
-
-    QStringList agentNames = m_agents->listAgents();
-    QString agentsListStr = "Доступные субагенты в системе: " + agentNames.join(", ");
-
-    QString final = m_agents->getFullPrompt(agentName) + "\nHISTORY:"  + "\n\n[СИСТЕМНАЯ СПРАВКА]\n" + agentsListStr + FileManager::GetOldMessages(chatId);
-    textwithoutnum finaluserText = phone->HideNumbers(userText);
-    QString fullContextText = final + "\n" + finaluserText.usertext;
-
-    qDebug() << fullContextText;
-    QJsonObject body;
-    QJsonArray partsArray;
-    QJsonObject textPart;
-    textPart["text"] = fullContextText;
-    partsArray.append(textPart);
-    sendTyping(chatId);
-    if (!imageData.isEmpty()) {
-        QJsonObject imagePart;
-        QJsonObject inlineData;
-
-        inlineData["mime_type"] = "image/jpeg";
-        inlineData["data"] = QString(imageData.toBase64());
-        imagePart["inline_data"] = inlineData;
-        partsArray.append(imagePart);
-    }
-
-    QJsonObject contentsObj;
-    contentsObj["parts"] = partsArray;
-
-    QJsonArray contentsArray;
-    contentsArray.append(contentsObj);
-    body["contents"] = contentsArray;
-
-    QJsonObject generationConfig;
-    generationConfig["responseMimeType"] = "application/json";
-    generationConfig["maxOutputTokens"] = 4096;
-    body["generationConfig"] = generationConfig;
-
-
-    QMap<QString, QString> nums = finaluserText.numbers;
-    requests->apiCall(this, aiHost, aiPath, body, {}, [this, chatId, userText,nums](const QJsonObject &response) {
-        checkreq(response, chatId, userText, nums);
-    });
-}
 
 void TgBot::poll() {
     const QString path = QString("/bot%1/getUpdates").arg(token);
@@ -245,14 +139,12 @@ void TgBot::poll() {
             }
 
             if (chatId != 0 && !text.isEmpty())
-                if (text.startsWith("/image")) {
-                    QString promptText = text.mid(6).trimmed();
-                    reqPhotoAI(promptText, chatId);
-                } else if (text == "/start") {
+                if (text.startsWith("/start")) {
                     sendMessage(chatId, "На связи Олег Сигмов, senior AI-ассистент по разработке, DevOps и системной инженерии из Sigmov LTD. А ещё у нас на вооружении появилась новая фича — команда /generate. Напиши её, опиши задачу, и я сгенерирую тебе сочный арт, техническую схему или архитектурный концепт.");
                 } else {
 
-                    reqAgent(text, chatId, "Главный агент");
+                    sendTyping(chatId);
+                    m_agents->reqAgent(text, chatId, "Главный агент", MessageSource::Telegram);
                 }
         }
         QTimer::singleShot(0, this, &TgBot::poll);

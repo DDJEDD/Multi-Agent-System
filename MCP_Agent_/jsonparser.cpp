@@ -128,6 +128,7 @@ std::optional<QList<AgentCall>> JSONParser::parse(const QJsonObject &response,
                 msgMap["delay"] = qBound(0, msgObj["delay"].toInt(), 5000);
                 msgMap["stickerId"] = msgObj["stickerId"].toString();
                 msgMap["photoUrl"]  = msgObj["photoUrl"].toString();
+                msgMap["code"]      = msgObj["code"].toString();
                 processedMsgs.append(msgMap);
             }
             argsMap["messages"] = processedMsgs;

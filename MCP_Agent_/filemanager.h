@@ -14,7 +14,6 @@ public:
     static bool deleteRepo(const QString &agentName, QDir dirEngine);
     static void renameDirectory(const QString &oldpath, const QString &dirpath);
     static QString getFile(const QString &fileToGet, QDir dirEngine);
-    static void loadEnvFile(const QString &filePath);
 };
 
 #endif // MCP_H

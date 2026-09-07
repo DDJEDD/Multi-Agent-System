@@ -9,16 +9,19 @@
 #include <QDateTime>
 #include <QTextEdit>
 #include <QPlainTextEdit>
+#include <QTextCursor>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QTimer>
+#include <QRandomGenerator>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QMessageBox>
 #include <QFontMetrics>
+#include <QFontDatabase>
 #include <QDir>
 #include <QTabWidget>
 #include <QSettings>
@@ -40,6 +43,8 @@
 #include <QStackedWidget>
 #include <QGridLayout>
 #include <QSet>
+#include <QGuiApplication>
+#include <QClipboard>
 #include <cmath>
 #include <utility>
 
@@ -228,11 +233,6 @@ QString iconButtonStyle(const QString &hoverColor, const QString &hoverBg, int f
                ).arg(kTextMuted, hoverBg, hoverColor).arg(fontSizePx).arg(radiusPx);
 }
 
-// ---------------------------------------------------------------------------
-// min_info stores both the agent's name and its role/badge in one file:
-// first line "Имя агента: X", everything after is the free-form role note.
-// This is the single place where that format is parsed/assembled.
-// ---------------------------------------------------------------------------
 QString extractRoleFromMinInfo(const QString &minInfo)
 {
     QStringList roleLines;
@@ -259,8 +259,7 @@ QString buildMinInfo(const QString &name, const QString &role)
 // AnimatedBackdrop / NetworkBackdrop / ToggleSwitch / AnimatedIconButton /
 // AgentAvatar / ClickableLabel / ClickableFrame / SubagentCard
 //
-// Pure presentation classes — unchanged from the "pretty" interface version,
-// they carry no persistence logic at all.
+// Pure presentation classes
 // ===========================================================================
 
 AnimatedBackdrop::AnimatedBackdrop(QWidget *parent)
@@ -1015,18 +1014,238 @@ void SubagentCard::refreshRolePreview()
 }
 
 // ===========================================================================
+// CodeBlockWidget — сворачиваемый блок кода внутри пузыря сообщения
+// ===========================================================================
+namespace {
+
+class CodeBlockWidget : public QFrame
+{
+public:
+    explicit CodeBlockWidget(const QString &code, QWidget *parent = nullptr)
+        : QFrame(parent)
+    {
+        auto *outer = new QVBoxLayout(this);
+        outer->setContentsMargins(0, 6, 0, 0);
+        outer->setSpacing(0);
+
+        m_header = new ClickableFrame(this);
+        m_header->setStyleSheet(QString(
+                                    "ClickableFrame {"
+                                    "   background-color: %1;"
+                                    "   border: 1px solid %2;"
+                                    "   border-top-left-radius: 10px;"
+                                    "   border-top-right-radius: 10px;"
+                                    "   border-left: none;"
+                                    "}"
+                                    ).arg(kBgCard, kBorder));
+
+        auto *headerLayout = new QHBoxLayout(m_header);
+        headerLayout->setContentsMargins(10, 6, 8, 6);
+        headerLayout->setSpacing(6);
+
+        m_chevron = new QLabel("▸", m_header);
+        m_chevron->setStyleSheet(QString(
+                                     "color: %1; border: none; background: transparent; font-size: 11px;"
+                                     ).arg(kAccent));
+
+        auto *label = new QLabel("Код", m_header);
+        label->setStyleSheet(QString(
+                                 "color: %1; border: none; background: transparent; font-size: 11px; font-weight: 600;"
+                                 ).arg(kTextSubtle));
+
+        auto *copyBtn = new AnimatedIconButton("⧉", kTextMuted, kAccent, m_header);
+        copyBtn->setFixedSize(24, 24);
+        copyBtn->setToolTip("Скопировать код");
+        copyBtn->setStyleSheet(iconButtonStyle(kAccent, "rgba(137, 180, 250, 0.15)"));
+        connect(copyBtn, &QPushButton::clicked, this, [code]() {
+            QGuiApplication::clipboard()->setText(code);
+        });
+
+        headerLayout->addWidget(m_chevron);
+        headerLayout->addWidget(label, 1);
+        headerLayout->addWidget(copyBtn);
+        connect(m_header, &ClickableFrame::clicked, this, [this]() { toggle(); });
+
+        m_container = new QWidget(this);
+        m_container->setMinimumHeight(0);
+        m_container->setMaximumHeight(0);
+        m_container->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+
+        auto *containerLayout = new QVBoxLayout(m_container);
+        containerLayout->setContentsMargins(0, 0, 0, 0);
+        containerLayout->setSpacing(0);
+
+        m_body = new QPlainTextEdit(m_container);
+        m_body->setPlainText(code);
+        m_body->setReadOnly(true);
+        m_body->setLineWrapMode(QPlainTextEdit::NoWrap);
+        m_body->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+        m_body->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+        m_body->setStyleSheet(QString(
+                                  "QPlainTextEdit {"
+                                  "   background-color: %1;"
+                                  "   color: %2;"
+                                  "   border: 1px solid %3;"
+                                  "   border-top: none;"
+                                  "   border-bottom-left-radius: 10px;"
+                                  "   border-bottom-right-radius: 10px;"
+                                  "   padding: 8px;"
+                                  "   font-size: 12px;"
+                                  "}"
+                                  "QScrollBar:vertical { background: transparent; width: 8px; margin: 0px; }"
+                                  "QScrollBar::handle:vertical { background: %3; border-radius: 4px; min-height: 24px; }"
+                                  ).arg(kBgWindow, kTextMain, kBorder));
+
+        containerLayout->addWidget(m_body);
+
+        outer->addWidget(m_header);
+        outer->addWidget(m_container);
+
+        const int lineH = QFontMetrics(m_body->font()).lineSpacing();
+        const int lines = qMin(code.count('\n') + 1, 14);
+        m_expandedHeight = lines * lineH + 20;
+
+        m_body->setFixedHeight(m_expandedHeight);
+
+        m_anim = new QPropertyAnimation(m_container, "maximumHeight", this);
+        m_anim->setDuration(220);
+        m_anim->setEasingCurve(QEasingCurve::OutCubic);
+    }
+
+    void toggle()
+    {
+        m_expanded = !m_expanded;
+        m_chevron->setText(m_expanded ? "▾" : "▸");
+
+        m_anim->stop();
+        m_anim->setStartValue(m_container->maximumHeight());
+        m_anim->setEndValue(m_expanded ? m_expandedHeight : 0);
+        m_anim->start();
+    }
+
+private:
+    ClickableFrame *m_header;
+    QLabel *m_chevron;
+    QWidget *m_container;
+    QPlainTextEdit *m_body;
+    QPropertyAnimation *m_anim;
+    int m_expandedHeight = 0;
+    bool m_expanded = false;
+};
+
+class ChatBubble : public QFrame
+{
+public:
+    ChatBubble(const QString &author, const QString &text, const QString &time,
+               bool isUser, const QString &code, QWidget *parent = nullptr)
+        : QFrame(parent)
+    {
+        auto *outer = new QHBoxLayout(this);
+        outer->setContentsMargins(0, 0, 0, 0);
+        outer->setSpacing(10);
+
+        auto *avatar = new AgentAvatar(this);
+        avatar->setFixedSize(30, 30);
+        avatar->setAgentName(author);
+
+        auto *bubble = new QFrame(this);
+        bubble->setObjectName("bubble");
+        bubble->setMaximumWidth(440);
+        const QString bg = isUser
+                               ? QString("qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 %1, stop:1 %2)").arg(kAccent, kAccent2)
+                               : kBgWindow;
+        bubble->setStyleSheet(QString(
+                                  "QFrame#bubble {"
+                                  "   background: %1;"
+                                  "   border: 1px solid %2;"
+                                  "   border-radius: 14px;"
+                                  "}"
+                                  ).arg(bg, isUser ? "transparent" : kBorder));
+
+        auto *bubbleLayout = new QVBoxLayout(bubble);
+        bubbleLayout->setContentsMargins(14, 10, 14, 10);
+        bubbleLayout->setSpacing(3);
+
+        auto *headerRow = new QHBoxLayout();
+        headerRow->setSpacing(8);
+        auto *authorLabel = new QLabel(author, bubble);
+        authorLabel->setStyleSheet(QString("font-size: 11px; font-weight: 700; color: %1; border:none; background:transparent;")
+                                       .arg(isUser ? "rgba(255,255,255,0.85)" : kAccent));
+        auto *timeLabel = new QLabel(time, bubble);
+        timeLabel->setStyleSheet(QString("font-size: 10px; color: %1; border:none; background:transparent;")
+                                     .arg(isUser ? "rgba(255,255,255,0.6)" : kTextMuted));
+        headerRow->addWidget(authorLabel);
+        headerRow->addStretch();
+        headerRow->addWidget(timeLabel);
+        bubbleLayout->addLayout(headerRow);
+
+        if (!text.trimmed().isEmpty()) {
+            auto *textLabel = new QLabel(bubble);
+            textLabel->setText(text.toHtmlEscaped().replace("\n", "<br/>"));
+            textLabel->setTextFormat(Qt::RichText);
+            textLabel->setWordWrap(true);
+            textLabel->setStyleSheet(QString("font-size: 13px; color: %1; border:none; background:transparent;")
+                                         .arg(isUser ? "#ffffff" : kTextMain));
+            bubbleLayout->addWidget(textLabel);
+        }
+
+        if (!code.trimmed().isEmpty()) {
+            auto *codeBlock = new CodeBlockWidget(code, bubble);
+            bubbleLayout->addWidget(codeBlock);
+        }
+
+        if (isUser) {
+            outer->addStretch(1);
+            outer->addWidget(bubble);
+            outer->addWidget(avatar, 0, Qt::AlignTop);
+        } else {
+            outer->addWidget(avatar, 0, Qt::AlignTop);
+            outer->addWidget(bubble);
+            outer->addStretch(1);
+        }
+    }
+
+    void playEntrance()
+    {
+        auto *effect = new QGraphicsOpacityEffect(this);
+        setGraphicsEffect(effect);
+
+        auto *anim = new QPropertyAnimation(effect, "opacity", this);
+        anim->setDuration(240);
+        anim->setStartValue(0.0);
+        anim->setEndValue(1.0);
+        anim->setEasingCurve(QEasingCurve::OutCubic);
+
+        QPointer<ChatBubble> self(this);
+        connect(anim, &QPropertyAnimation::finished, this, [self]() {
+            if (self)
+                self->setGraphicsEffect(nullptr);
+        });
+
+        anim->start(QAbstractAnimation::DeleteWhenStopped);
+    }
+};
+
+} // anonymous namespace
+
+// ===========================================================================
 // MainWindow
 // ===========================================================================
 
-MainWindow::MainWindow(QWidget *parent)
+MainWindow::MainWindow(agents *agentManager, QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
+    , m_agentManager(agentManager)
 {
     QSettings themeSettings(QString(APP_SRC_DIR) + "/config.ini", QSettings::IniFormat);
     loadPalette(themeSettings.value("theme", "dark").toString());
 
     ui->setupUi(this);
-    m_agentManager = new agents(this);
+
+    connect(m_agentManager, &agents::requestSendMessagesToUIDelayed,
+            this, &MainWindow::handleAgentReplyForUI);
+    connect(m_agentManager, &agents::requestThinkingContext,
+            this, &MainWindow::handleThinkingContext);
 
     setWindowTitle("Agent Console");
     resize(1080, 700);
@@ -1054,9 +1273,34 @@ MainWindow::~MainWindow()
     delete ui;
 }
 
-// ---------------------------------------------------------------------------
-// Persistence (backend logic layer)
-// ---------------------------------------------------------------------------
+qint64 MainWindow::uiChatIdFor(const QString &agentId)
+{
+    auto it = m_uiChatIds.constFind(agentId);
+    if (it != m_uiChatIds.constEnd())
+        return it.value();
+
+    static qint64 nextId = -1;
+    const qint64 id = nextId--;
+    m_uiChatIds.insert(agentId, id);
+    return id;
+}
+
+void MainWindow::handleAgentReplyForUI(qint64 chatId, const QList<DelayedMessage> &messages)
+{
+    const QString agentId = m_uiChatIds.key(chatId);
+
+    for (const DelayedMessage &msg : messages) {
+        if (!msg.text.isEmpty() || !msg.code.isEmpty())
+            receiveAgentReply(agentId, msg.text, msg.code);
+
+        if (!msg.code.isEmpty()) {
+            const QString author = agentId.isEmpty() ? m_mainAgentName : subagentName(agentId);
+            showCodePanel(msg.code, "Код — " + author);
+        }
+    }
+
+    refreshAgentsFromDisk();
+}
 
 void MainWindow::loadAgentsFromDisk()
 {
@@ -1082,18 +1326,12 @@ void MainWindow::loadAgentsFromDisk()
     }
 }
 
-// ---------------------------------------------------------------------------
-// Обновление списка агентов вручную (кнопка ⟳ в шапке списка).
-// Синхронизирует карточки субагентов с фактическим содержимым Agents/ на
-// диске: добавляет новых, убирает удалённые снаружи, обновляет роли.
-// ---------------------------------------------------------------------------
 void MainWindow::refreshAgentsFromDisk()
 {
     const QStringList existing = m_agentManager->listAgents();
     const QSet<QString> onDisk(existing.begin(), existing.end());
     const QString mainBackendName = m_agentFolderNames.value(QString(), m_mainAgentName);
 
-    // Добавляем новых агентов, которых ещё нет в списке карточек.
     for (const QString &agentName : existing) {
         if (agentName == mainBackendName)
             continue;
@@ -1106,7 +1344,6 @@ void MainWindow::refreshAgentsFromDisk()
         m_agentEnabled.insert(id, true);
     }
 
-    // Удаляем карточки агентов, чьи папки исчезли с диска.
     const QStringList ids = m_cards.keys();
     for (const QString &id : ids) {
         const QString backendName = m_agentFolderNames.value(id);
@@ -1114,8 +1351,6 @@ void MainWindow::refreshAgentsFromDisk()
             removeSubagent(id);
     }
 
-    // Подтягиваем актуальные роли для оставшихся карточек (на случай, если
-    // min_info был отредактирован вручную или другим агентом).
     for (auto it = m_agentFolderNames.constBegin(); it != m_agentFolderNames.constEnd(); ++it) {
         const QString &id = it.key();
         const QString &backendName = it.value();
@@ -1132,10 +1367,6 @@ void MainWindow::syncAgentName(const QString &backendName, const QString &newNam
     const QString role = extractRoleFromMinInfo(m_agentManager->getFile(backendName, "min_info"));
     m_agentManager->editFile(backendName, buildMinInfo(newName, role), "min_info");
 }
-
-// ---------------------------------------------------------------------------
-// UI construction (interface layer)
-// ---------------------------------------------------------------------------
 
 QWidget *MainWindow::buildSettingsPage()
 {
@@ -1452,6 +1683,14 @@ QWidget *MainWindow::buildMainView()
 
     layout->addWidget(buildChatArea(), 1);
 
+    codePanelSeparator = new QFrame(view);
+    codePanelSeparator->setFrameShape(QFrame::VLine);
+    codePanelSeparator->setStyleSheet(QString("background-color: %1; border: none; max-width: 1px;").arg(kBorder));
+    codePanelSeparator->setVisible(false);
+    layout->addWidget(codePanelSeparator);
+
+    layout->addWidget(buildCodePanel());
+
     return view;
 }
 
@@ -1502,7 +1741,6 @@ QWidget *MainWindow::buildSidebar()
         const QString newName = mainNameEdit->text().trimmed();
 
         if (newName.isEmpty()) {
-            // Пустое имя недопустимо — откатываем поле к прежнему значению.
             setMainAgentName(oldName);
             return;
         }
@@ -1528,9 +1766,6 @@ QWidget *MainWindow::buildSidebar()
     mainRow->addWidget(mainSettingsButton);
     statusLayout->addLayout(mainRow);
 
-    // Роль-бейдж и аптайм — из "логики": min_info хранит роль, а таймер
-    // работы приложения раньше отображался отдельным лейблом. Здесь оба
-    // помещены в одну строку под именем, стилистически как в SubagentCard.
     auto *metaRow = new QHBoxLayout();
     metaRow->setSpacing(8);
 
@@ -1586,7 +1821,6 @@ QWidget *MainWindow::buildSidebar()
         const QString id = addSubagent();
         const QString backendName = m_agentFolderNames.value(id);
 
-        // Создаём агента на диске (логика из agents-менеджера).
         m_agentManager->createAgent(backendName, QString());
         m_agentManager->editFile(backendName, buildMinInfo(backendName, QString()), "min_info");
 
@@ -1699,6 +1933,63 @@ QWidget *MainWindow::buildChatArea()
     chatBackdropLayout->addWidget(chatScroll);
     layout->addWidget(chatBackdropContainer, 1);
 
+    thinkingChip = new QFrame(panel);
+    thinkingChip->setStyleSheet(QString(
+                                    "QFrame {"
+                                    "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 %1, stop:1 %2);"
+                                    "   border-radius: 12px;"
+                                    "}"
+                                    ).arg(kBgCard, kBgCardHover));
+    applyElevation(thinkingChip, 18, 3, 55);
+
+    auto *chipLayout = new QHBoxLayout(thinkingChip);
+    chipLayout->setContentsMargins(12, 7, 14, 7);
+    chipLayout->setSpacing(8);
+
+    thinkingDot = new QLabel("●", thinkingChip);
+    thinkingDot->setStyleSheet(QString("color: %1; font-size: 12px; border:none; background:transparent;").arg(kAccent));
+
+    thinkingText = new QLabel("Думаю…", thinkingChip);
+    thinkingText->setStyleSheet(QString("color: %1; font-size: 12px; font-weight: 600; border:none; background:transparent;").arg(kTextMain));
+
+    chipLayout->addWidget(thinkingDot);
+    chipLayout->addWidget(thinkingText, 1);
+
+    thinkingOpacity = new QGraphicsOpacityEffect(thinkingChip);
+    thinkingOpacity->setOpacity(0.0);
+    thinkingChip->setGraphicsEffect(thinkingOpacity);
+    thinkingChip->setVisible(false);
+
+    thinkingFade = new QPropertyAnimation(thinkingOpacity, "opacity", this);
+    thinkingFade->setDuration(220);
+    thinkingFade->setEasingCurve(QEasingCurve::OutCubic);
+
+    thinkingPulse = new QVariantAnimation(this);
+    thinkingPulse->setDuration(650);
+    thinkingPulse->setStartValue(0.25);
+    thinkingPulse->setEndValue(1.0);
+    thinkingPulse->setEasingCurve(QEasingCurve::InOutSine);
+    thinkingPulse->setLoopCount(-1);
+    connect(thinkingPulse, &QVariantAnimation::valueChanged, this, [this](const QVariant &value) {
+        QColor c(kAccent);
+        c.setAlphaF(value.toReal());
+        thinkingDot->setStyleSheet(QString("color: %1; font-size: 12px; border:none; background:transparent;")
+                                       .arg(c.name(QColor::HexArgb)));
+    });
+
+    thinkingHideTimer = new QTimer(this);
+    thinkingHideTimer->setSingleShot(true);
+    thinkingHideTimer->setInterval(3000);
+    connect(thinkingHideTimer, &QTimer::timeout, this, [this]() {
+        thinkingFade->stop();
+        thinkingFade->setStartValue(thinkingOpacity->opacity());
+        thinkingFade->setEndValue(0.0);
+        thinkingFade->start();
+        thinkingPulse->stop();
+    });
+
+    layout->addWidget(thinkingChip, 0, Qt::AlignLeft);
+
     auto *inputFrame = new QFrame(panel);
     inputFrame->setStyleSheet(QString(
                                   "QFrame {"
@@ -1752,8 +2043,32 @@ QWidget *MainWindow::buildChatArea()
     return panel;
 }
 
-void MainWindow::appendMainMessage(const QString &text, bool isUser) { appendHistory(QString(), text, isUser); }
-void MainWindow::appendSubagentMessage(const QString &id, const QString &text, bool isUser) { appendHistory(id, text, isUser); }
+void MainWindow::handleThinkingContext(const QString &stage, const QString &message)
+{
+    Q_UNUSED(stage);
+    if (!thinkingChip) return;
+
+    QString shortMsg = message;
+    shortMsg.replace('\n', ' ');
+    const QFontMetrics metrics(thinkingText->font());
+    thinkingText->setText(metrics.elidedText("🧠 " + shortMsg, Qt::ElideRight, 360));
+
+    thinkingChip->setVisible(true);
+    thinkingFade->stop();
+    thinkingFade->setStartValue(thinkingOpacity->opacity());
+    thinkingFade->setEndValue(1.0);
+    thinkingFade->start();
+
+    if (thinkingPulse->state() != QAbstractAnimation::Running)
+        thinkingPulse->start();
+
+    thinkingHideTimer->start();
+
+    refreshAgentsFromDisk();
+}
+
+void MainWindow::appendMainMessage(const QString &text, bool isUser, const QString &code) { appendHistory(QString(), text, isUser, code); }
+void MainWindow::appendSubagentMessage(const QString &id, const QString &text, bool isUser, const QString &code) { appendHistory(id, text, isUser, code); }
 
 void MainWindow::setAgentActive(bool active)
 {
@@ -1798,7 +2113,6 @@ SubagentCard *MainWindow::createCardWidget(const QString &id, const QString &nam
         const QString oldBackendName = m_agentFolderNames.value(cardId);
 
         if (trimmed.isEmpty()) {
-            // Пустое имя недопустимо — откатываем поле к прежнему значению.
             setSubagentName(cardId, oldBackendName);
             return;
         }
@@ -1928,7 +2242,6 @@ QString MainWindow::subagentName(const QString &id) const
 
 QString MainWindow::subagentRole(const QString &id) const
 {
-    // Диск — источник истины по роли (min_info), как во второй версии.
     const QString backendName = m_agentFolderNames.value(id);
     if (backendName.isEmpty())
         return QString();
@@ -1988,90 +2301,9 @@ void MainWindow::refreshComposerPlaceholder()
         QString("Написать агенту «%1»…  (Enter — отправить, Shift+Enter — новая строка)").arg(targetName));
 }
 
-namespace {
-class ChatBubble : public QFrame
+void MainWindow::appendHistory(const QString &agentId, const QString &text, bool isUser, const QString &code)
 {
-public:
-    ChatBubble(const QString &author, const QString &text, const QString &time, bool isUser, QWidget *parent = nullptr)
-        : QFrame(parent)
-    {
-        auto *outer = new QHBoxLayout(this);
-        outer->setContentsMargins(0, 0, 0, 0);
-        outer->setSpacing(10);
-
-        auto *avatar = new AgentAvatar(this);
-        avatar->setFixedSize(30, 30);
-        avatar->setAgentName(author);
-
-        auto *bubble = new QFrame(this);
-        bubble->setObjectName("bubble");
-        bubble->setMaximumWidth(440);
-        const QString bg = isUser
-                               ? QString("qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 %1, stop:1 %2)").arg(kAccent, kAccent2)
-                               : kBgWindow;
-        bubble->setStyleSheet(QString(
-                                  "QFrame#bubble {"
-                                  "   background: %1;"
-                                  "   border: 1px solid %2;"
-                                  "   border-radius: 14px;"
-                                  "}"
-                                  ).arg(bg, isUser ? "transparent" : kBorder));
-
-        auto *bubbleLayout = new QVBoxLayout(bubble);
-        bubbleLayout->setContentsMargins(14, 10, 14, 10);
-        bubbleLayout->setSpacing(3);
-
-        auto *headerRow = new QHBoxLayout();
-        headerRow->setSpacing(8);
-        auto *authorLabel = new QLabel(author, bubble);
-        authorLabel->setStyleSheet(QString("font-size: 11px; font-weight: 700; color: %1; border:none; background:transparent;")
-                                       .arg(isUser ? "rgba(255,255,255,0.85)" : kAccent));
-        auto *timeLabel = new QLabel(time, bubble);
-        timeLabel->setStyleSheet(QString("font-size: 10px; color: %1; border:none; background:transparent;")
-                                     .arg(isUser ? "rgba(255,255,255,0.6)" : kTextMuted));
-        headerRow->addWidget(authorLabel);
-        headerRow->addStretch();
-        headerRow->addWidget(timeLabel);
-
-        auto *textLabel = new QLabel(bubble);
-        textLabel->setText(text.toHtmlEscaped().replace("\n", "<br/>"));
-        textLabel->setTextFormat(Qt::RichText);
-        textLabel->setWordWrap(true);
-        textLabel->setStyleSheet(QString("font-size: 13px; color: %1; border:none; background:transparent;")
-                                     .arg(isUser ? "#ffffff" : kTextMain));
-
-        bubbleLayout->addLayout(headerRow);
-        bubbleLayout->addWidget(textLabel);
-
-        if (isUser) {
-            outer->addStretch(1);
-            outer->addWidget(bubble);
-            outer->addWidget(avatar, 0, Qt::AlignTop);
-        } else {
-            outer->addWidget(avatar, 0, Qt::AlignTop);
-            outer->addWidget(bubble);
-            outer->addStretch(1);
-        }
-    }
-
-    void playEntrance()
-    {
-        auto *effect = new QGraphicsOpacityEffect(this);
-        setGraphicsEffect(effect);
-
-        auto *anim = new QPropertyAnimation(effect, "opacity", this);
-        anim->setDuration(240);
-        anim->setStartValue(0.0);
-        anim->setEndValue(1.0);
-        anim->setEasingCurve(QEasingCurve::OutCubic);
-        anim->start(QAbstractAnimation::DeleteWhenStopped);
-    }
-};
-}
-
-void MainWindow::appendHistory(const QString &agentId, const QString &text, bool isUser)
-{
-    ChatEntry entry{text, isUser, QDateTime::currentDateTime().toString("hh:mm")};
+    ChatEntry entry{text, isUser, QDateTime::currentDateTime().toString("hh:mm"), code};
     m_histories[agentId].append(entry);
     if (agentId == m_activeAgentId)
         renderMessage(entry);
@@ -2083,7 +2315,7 @@ void MainWindow::renderMessage(const ChatEntry &entry)
                                ? "Вы"
                                : (m_activeAgentId.isEmpty() ? m_mainAgentName : subagentName(m_activeAgentId));
 
-    auto *bubble = new ChatBubble(author, entry.text, entry.time, entry.isUser, chatBubblesHost);
+    auto *bubble = new ChatBubble(author, entry.text, entry.time, entry.isUser, entry.code, chatBubblesHost);
     chatBubblesLayout->addWidget(bubble);
     bubble->playEntrance();
 
@@ -2393,7 +2625,8 @@ void MainWindow::openAppSettings()
     settings.setValue("telegram_token", botToken);
     settings.setValue("gemini_api_key", geminiApiKey);
 
-    emit appCredentialsChanged(botToken, geminiApiKey);
+    emit appTelegramTokenChanged(botToken);
+    emit appGeminiTokenChanged(geminiApiKey);
 }
 
 void MainWindow::openMainAgentSettings()
@@ -2476,14 +2709,19 @@ void MainWindow::handleSendClicked()
     }
 
     appendHistory(m_activeAgentId, text, true);
+
     const QString backendName = m_agentFolderNames.value(m_activeAgentId, m_mainAgentName);
+    const qint64 chatId = uiChatIdFor(m_activeAgentId);
+
+    m_agentManager->reqAgent(text, chatId, backendName, MessageSource::UI);
+
     emit messageSubmitted(m_activeAgentId, backendName, text);
     messageInput->clear();
 }
 
-void MainWindow::receiveAgentReply(const QString &agentId, const QString &text)
+void MainWindow::receiveAgentReply(const QString &agentId, const QString &text, const QString &code)
 {
-    appendHistory(agentId, text, false);
+    appendHistory(agentId, text, false, code);
 }
 
 void MainWindow::updateUptime()
@@ -2498,4 +2736,193 @@ void MainWindow::updateUptime()
                                  .arg(mins, 2, 10, QChar('0'))
                                  .arg(seconds, 2, 10, QChar('0')));
     }
+}
+
+// ИСПРАВЛЕННАЯ ВЕРСИЯ: buildCodePanel с setFixedWidth
+QWidget *MainWindow::buildCodePanel()
+{
+    auto *panel = new NetworkBackdrop(NetworkBackdrop::Surface::Panel, this);
+    codePanelContainer = panel;
+    panel->setFixedWidth(0);  // ← используем setFixedWidth вместо setMaximumWidth
+
+    auto *layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setSpacing(10);
+
+    auto *headerRow = new QHBoxLayout();
+    headerRow->setSpacing(8);
+
+    codePanelTitle = new QLabel("Код", panel);
+    codePanelTitle->setStyleSheet(QString(
+                                      "color: %1; font-size: 14px; font-weight: 700; border: none; background: transparent;"
+                                      ).arg(kTextMain));
+
+    auto *copyBtn = new AnimatedIconButton("⧉", kTextMuted, kAccent, panel);
+    copyBtn->setFixedSize(28, 28);
+    copyBtn->setToolTip("Скопировать код");
+    copyBtn->setStyleSheet(iconButtonStyle(kAccent, "rgba(137, 180, 250, 0.15)"));
+    connect(copyBtn, &QPushButton::clicked, this, [this]() {
+        QGuiApplication::clipboard()->setText(codePanelBody->toPlainText());
+    });
+
+    auto *closeBtn = new AnimatedIconButton("✕", kTextMuted, kAccentRed, panel);
+    closeBtn->setFixedSize(28, 28);
+    closeBtn->setToolTip("Закрыть панель кода");
+    closeBtn->setStyleSheet(iconButtonStyle(kAccentRed, "rgba(243, 139, 168, 0.15)"));
+    connect(closeBtn, &QPushButton::clicked, this, &MainWindow::hideCodePanel);
+
+    headerRow->addWidget(codePanelTitle, 1);
+    headerRow->addWidget(copyBtn);
+    headerRow->addWidget(closeBtn);
+    layout->addLayout(headerRow);
+
+    codePanelBody = new QPlainTextEdit(panel);
+    codePanelBody->setReadOnly(true);
+    codePanelBody->setLineWrapMode(QPlainTextEdit::NoWrap);
+    codePanelBody->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    codePanelBody->setStyleSheet(QString(
+                                     "QPlainTextEdit {"
+                                     "   background-color: %1;"
+                                     "   color: %2;"
+                                     "   border: 1px solid %3;"
+                                     "   border-radius: 10px;"
+                                     "   padding: 10px;"
+                                     "   font-size: 12px;"
+                                     "}"
+                                     "QScrollBar:vertical { background: transparent; width: 8px; margin: 0px; }"
+                                     "QScrollBar::handle:vertical { background: %3; border-radius: 4px; min-height: 24px; }"
+                                     ).arg(kBgWindow, kTextMain, kBorder));
+    layout->addWidget(codePanelBody, 1);
+
+    // Мигающий курсор в конце "печатаемого" текста — усиливает эффект живой печати
+    codeTypewriterCursorBlink = new QTimer(this);
+    codeTypewriterCursorBlink->setInterval(430);
+    connect(codeTypewriterCursorBlink, &QTimer::timeout, this, [this]() {
+        m_typewriterCursorVisible = !m_typewriterCursorVisible;
+        updateTypewriterCursorDisplay();
+    });
+
+    return panel;
+}
+
+// ИСПРАВЛЕННАЯ ВЕРСИЯ: showCodePanel — теперь код "печатается" быстро, как будто его набирает ИИ
+void MainWindow::showCodePanel(const QString &code, const QString &title)
+{
+    codePanelTitle->setText(title.isEmpty() ? "Код" : title);
+
+    // Если уже что-то печаталось — останавливаем и начинаем печатать новый код с нуля
+    if (codeTypewriterTimer && codeTypewriterTimer->isActive())
+        codeTypewriterTimer->stop();
+
+    codePanelBody->clear();
+    m_typewriterFullText = code;
+    m_typewriterPos = 0;
+    m_typewriterCursorVisible = true;
+
+    if (!codeTypewriterTimer) {
+        codeTypewriterTimer = new QTimer(this);
+        connect(codeTypewriterTimer, &QTimer::timeout, this, &MainWindow::advanceCodeTypewriter);
+    }
+
+    const bool wasOpen = m_codePanelOpen;
+    codePanelSeparator->setVisible(true);
+    m_codePanelOpen = true;
+
+    if (!wasOpen) {
+        auto *anim = new QVariantAnimation(this);
+        anim->setDuration(260);
+        anim->setEasingCurve(QEasingCurve::OutCubic);
+        anim->setStartValue(0);
+        anim->setEndValue(kCodePanelWidth);
+        connect(anim, &QVariantAnimation::valueChanged, this, [this](const QVariant &value) {
+            codePanelContainer->setFixedWidth(value.toInt());
+        });
+        anim->start(QAbstractAnimation::DeleteWhenStopped);
+    } else {
+        codePanelContainer->setFixedWidth(kCodePanelWidth);
+    }
+
+    if (codeTypewriterCursorBlink)
+        codeTypewriterCursorBlink->start();
+
+    // Печатаем быстрыми "пачками" символов — эффект живого набора текста ИИ.
+    // Интервал короткий (8 мс), поэтому даже большой код печатается за доли секунды,
+    // но глаз успевает заметить анимацию.
+    codeTypewriterTimer->start(8);
+}
+
+// Печатает очередную "пачку" символов кода в панель, имитируя быстрый набор текста ИИ
+void MainWindow::advanceCodeTypewriter()
+{
+    if (m_typewriterPos >= m_typewriterFullText.size()) {
+        codeTypewriterTimer->stop();
+        if (codeTypewriterCursorBlink)
+            codeTypewriterCursorBlink->stop();
+        m_typewriterCursorVisible = false;
+        updateTypewriterCursorDisplay();
+        return;
+    }
+
+    // Случайный размер "пачки" символов за тик — придаёт печати живой, неравномерный ритм
+    const int chunk = 2 + QRandomGenerator::global()->bounded(5); // 2..6 символов
+    const int end = qMin(m_typewriterPos + chunk, m_typewriterFullText.size());
+
+    QTextCursor cursor(codePanelBody->document());
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertText(m_typewriterFullText.mid(m_typewriterPos, end - m_typewriterPos));
+
+    m_typewriterPos = end;
+
+    QScrollBar *bar = codePanelBody->verticalScrollBar();
+    bar->setValue(bar->maximum());
+}
+
+// Показывает/скрывает мигающий "курсор" в конце уже напечатанного текста
+void MainWindow::updateTypewriterCursorDisplay()
+{
+    if (!codePanelBody) return;
+
+    QTextCursor cursor(codePanelBody->document());
+    cursor.movePosition(QTextCursor::End);
+
+    // Убираем предыдущий символ курсора, если он был нарисован
+    if (m_typewriterCursorDrawn) {
+        cursor.movePosition(QTextCursor::PreviousCharacter, QTextCursor::KeepAnchor);
+        cursor.removeSelectedText();
+    }
+
+    if (m_typewriterCursorVisible && m_typewriterPos < m_typewriterFullText.size()) {
+        cursor.insertText("▌");
+        m_typewriterCursorDrawn = true;
+    } else {
+        m_typewriterCursorDrawn = false;
+    }
+}
+
+// ИСПРАВЛЕННАЯ ВЕРСИЯ: hideCodePanel с QVariantAnimation
+void MainWindow::hideCodePanel()
+{
+    if (!m_codePanelOpen) return;
+    m_codePanelOpen = false;
+
+    if (codeTypewriterTimer)
+        codeTypewriterTimer->stop();
+    if (codeTypewriterCursorBlink)
+        codeTypewriterCursorBlink->stop();
+
+    auto *anim = new QVariantAnimation(this);
+    anim->setDuration(260);
+    anim->setEasingCurve(QEasingCurve::OutCubic);
+    anim->setStartValue(codePanelContainer->width());
+    anim->setEndValue(0);
+
+    connect(anim, &QVariantAnimation::valueChanged, this, [this](const QVariant &value) {
+        codePanelContainer->setFixedWidth(value.toInt());
+    });
+
+    connect(anim, &QVariantAnimation::finished, this, [this]() {
+        codePanelSeparator->setVisible(false);
+    });
+
+    anim->start(QAbstractAnimation::DeleteWhenStopped);
 }

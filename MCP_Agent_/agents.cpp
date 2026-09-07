@@ -5,7 +5,131 @@
 #include <QTextStream>
 #include <QCoreApplication>
 #include <QDebug>
-agents::agents(QObject *parent) : QObject(parent) {}
+#include <QJsonArray>
+#include <QSettings>
+#include <QTimer>
+agents::agents(QObject *parent) : QObject(parent) {
+    number = new phonenumber(this);
+    QSettings settings(QString(APP_SRC_DIR) + "/config.ini", QSettings::IniFormat);
+    QString geminiKey = settings.value("gemini_api_key").toString();
+    setGeminiKey(geminiKey);
+
+    if (geminiKey.isEmpty()) {
+        qWarning() << "ВНИМАНИЕ: GEMINI_API_KEY не найден ни в config.ini, ни в переменных окружения!";
+    }
+}
+void agents::setGeminiKey(const QString &key){
+    geminiKey=key;
+}
+void agents::reqAgent(const QString &userText, qint64 chatId,const QString &agentName,MessageSource source,int retryCount,const QByteArray &imageData) {
+
+
+    if (geminiKey.isEmpty()) {
+        qWarning() << "GEMINI_API_KEY не установлен!";
+        emit requestError("GEMINI_KEY_NOT_FOUND", "Gemini key не установлен!");
+        return;
+    }
+    QString aiHost = "generativelanguage.googleapis.com";
+    QString aiPath = QString("/v1beta/models/gemini-3.6-flash:generateContent?key=%1").arg(geminiKey);
+
+    QStringList agentNames = agents::listAgents();
+    QString agentsListStr = "Доступные субагенты в системе: " + agentNames.join(", ");
+
+    QString final = agents::getFullPrompt(agentName) + "\nHISTORY:"  + "\n\n[СИСТЕМНАЯ СПРАВКА]\n" + agentsListStr + FileManager::GetOldMessages(chatId);
+    textwithoutnum finaluserText = number->HideNumbers(userText);
+    QString fullContextText = final + "\n" + finaluserText.usertext;
+
+    qDebug() << fullContextText;
+    QJsonObject body;
+    QJsonArray partsArray;
+    QJsonObject textPart;
+    textPart["text"] = fullContextText;
+    partsArray.append(textPart);
+    if (!imageData.isEmpty()) {
+        QJsonObject imagePart;
+        QJsonObject inlineData;
+
+        inlineData["mime_type"] = "image/jpeg";
+        inlineData["data"] = QString(imageData.toBase64());
+        imagePart["inline_data"] = inlineData;
+        partsArray.append(imagePart);
+    }
+
+    QJsonObject contentsObj;
+    contentsObj["parts"] = partsArray;
+
+    QJsonArray contentsArray;
+    contentsArray.append(contentsObj);
+    body["contents"] = contentsArray;
+
+    QJsonObject generationConfig;
+    generationConfig["responseMimeType"] = "application/json";
+    generationConfig["maxOutputTokens"] = 4096;
+    body["generationConfig"] = generationConfig;
+
+
+    QMap<QString, QString> nums = finaluserText.numbers;
+    requests->apiCall(this, aiHost, aiPath, body, {},
+                      [this, chatId, userText, agentName, source, imageData, nums, retryCount](const QJsonObject &response) {
+
+                          if (response.contains("error")) {
+                              int errorCode = response["error"].toObject()["code"].toInt();
+                              bool isRetryable = (errorCode == 503 || errorCode == 429 || errorCode == 500);
+
+                              if (isRetryable && retryCount < kMaxRetries) {
+                                  int delayMs = kRetryBaseDelayMs * (1 << retryCount);
+                                  qWarning() << "[Agents] Ошибка" << errorCode
+                                             << "от Gemini, повтор запроса через" << delayMs << "мс. Попытка №"
+                                             << (retryCount + 1) << "из" << kMaxRetries;
+
+                                  QTimer::singleShot(delayMs, this, [this, userText, chatId, agentName, source, imageData, retryCount]() {
+                                      reqAgent(userText, chatId, agentName, source,retryCount + 1,imageData );
+                                  });
+                                  return;
+                              }
+
+                              if (isRetryable) {
+                                  qWarning() << "[Agents] Исчерпаны попытки повтора после ошибки" << errorCode;
+                                  emit requestError("GEMINI_UNAVAILABLE", "Сервис Gemini временно недоступен, попробуйте позже.");
+                                  return;
+                              }
+                          }
+
+                          checkreq(response, chatId, userText, nums, source);
+                      });
+}
+
+void agents::checkreq(const QJsonObject &response, qint64 chatId, const QString &text, const QMap<QString, QString> &nums, MessageSource source) {
+
+    QJsonArray candidates = response["candidates"].toArray();
+    if (!candidates.isEmpty()) {
+        QJsonArray parts = candidates[0].toObject()["content"].toObject()["parts"].toArray();
+        if (!parts.isEmpty()) {
+            QString aiText = parts[0].toObject()["text"].toString();
+            qDebug().noquote() << "Ответ от Gemini (текст):" << aiText;
+            emit requestGeminiLog(aiText);
+        }
+    }
+
+    auto optCalls = JSONParser::parse(response, nums, *number);
+    if (!optCalls.has_value() || optCalls->isEmpty()) {
+        qWarning() << "Не удалось распарсить ответ от Gemini или стек вызовов пуст.";
+        emit requestError("GEMINI_JSON_ERROR", "Не удалось распарсить ответ от Gemini или стек вызовов пуст.");
+        return;
+    }
+
+    const QList<AgentCall> &calls = *optCalls;
+    qDebug() << "[TgBot] Получено вызовов сабагентов:" << calls.size();
+
+    for (const AgentCall &call : calls) {
+        qDebug() << "  -> Запуск функции:" << call.functionName
+                 << "для агента:" << call.agentName
+                 << "ID:" << call.id;
+
+
+        executeCall(call.id, call.agentName, call.args, call.functionName, chatId, text, call.role, source);
+    }
+}
 
 
 QString agents::getAgentPath(const QString &agentName) const {
@@ -89,10 +213,60 @@ QString agents::getFile(const QString &agentName,  const QString &fileToGet) con
     QDir agentDir(dirpath);
 
     return FileManager::getFile(fileToGet, agentDir);
-}void agents::executeCall(const QString &id, const QString &callerAgentName, const QVariantMap &args, const QString &functionName, qint64 chatId, const QString &userText,const QString &role)
-{
-    qDebug() << "[Agents] Вызов функции:" << functionName << "ID:" << id << "От агента:" << callerAgentName << "ChatID:" << chatId;
+}
 
+static AggregatedMessages MessageAggregator(const QVariantList &msgList){
+    AggregatedMessages result;
+
+    for (const QVariant &item : msgList) {
+        QVariantMap msgMap = item.toMap();
+
+        QString text = msgMap.value("text").toString().trimmed();
+        int delay = msgMap.value("delay", 0).toInt();
+
+        QString stickerId;
+        if (msgMap.contains("stickerId")) {
+            stickerId = msgMap.value("stickerId").toString().trimmed();
+        } else if (msgMap.contains("sticker")) {
+            stickerId = msgMap.value("sticker").toString().trimmed();
+        }
+
+        QString photoUrl;
+        if (msgMap.contains("photoUrl")) {
+            photoUrl = msgMap.value("photoUrl").toString().trimmed();
+        }
+
+        if (text.isEmpty() && stickerId.isEmpty()) {
+            continue;
+        }
+        QString code;
+        if(msgMap.contains("code") && msgMap.value("code").toString().trimmed() != "NULL"){
+            code = msgMap.value("code").toString().trimmed();
+        }
+
+
+        DelayedMessage dMsg;
+        dMsg.text = text;
+        dMsg.stickerId = stickerId;
+        dMsg.delay = delay;
+        dMsg.photoUrl = photoUrl;
+        dMsg.code = code;
+        result.messages.append(dMsg);
+
+        if (!text.isEmpty()) {
+            if (!result.fullAiResponse.isEmpty())
+                result.fullAiResponse += "\n";
+            result.fullAiResponse += text;
+        }
+    }
+
+    return result;
+}
+
+
+void agents::executeCall(const QString &id, const QString &callerAgentName, const QVariantMap &args, const QString &functionName, qint64 chatId, const QString &userText,const QString &role, MessageSource source)
+{
+    emit requestThinkingContext("executeCall", "[Agents] Вызов функции:" + functionName + "От агента:" + callerAgentName + "ChatID:"  + QString::number(chatId));
     if (functionName == "createAgent" && role == Constants::RoleOrchestrator) {
         QString targetAgent = args.value("agentName", args.value("agent_name").toString()).toString().trimmed();
         QString purpose = args.value("purpose").toString().trimmed();
@@ -102,7 +276,7 @@ QString agents::getFile(const QString &agentName,  const QString &fileToGet) con
             return;
         }
 
-        qDebug() << "[Agents] Создание агента:" << targetAgent << "Цель:" << purpose;
+        emit requestThinkingContext("agentCreate", "[Agents] Создание агента:" + targetAgent + "Цель:" + purpose);
         createAgent(targetAgent, purpose);
     }
 
@@ -110,7 +284,7 @@ QString agents::getFile(const QString &agentName,  const QString &fileToGet) con
         QString targetAgent = args.value("agentName", args.value("agent_name").toString()).toString().trimmed();
         if (targetAgent.isEmpty()) targetAgent = callerAgentName;
 
-        qDebug() << "[Agents] Удаление агента:" << targetAgent;
+        emit requestThinkingContext("deleteAgent", "[Agents] Удаление агента:" + targetAgent);
         deleteAgent(targetAgent);
     }
 
@@ -123,7 +297,7 @@ QString agents::getFile(const QString &agentName,  const QString &fileToGet) con
             return;
         }
 
-        qDebug() << "[Agents] Переименование агента с" << oldName << "на" << newName;
+        emit requestThinkingContext("changeAgentName","[Agents] Переименование агента с" + oldName + "на" + newName);
         changeAgentName(oldName, newName);
     }
 
@@ -137,7 +311,7 @@ QString agents::getFile(const QString &agentName,  const QString &fileToGet) con
             return;
         }
 
-        qDebug() << "[Agents] Изменение файла" << fileToEdit << "у агента:" << targetAgent;
+        emit requestThinkingContext("editFile","[Agents] Изменение файла" + fileToEdit + "у агента:" + targetAgent);
         editFile(targetAgent, content, fileToEdit);
     }
 
@@ -164,58 +338,24 @@ QString agents::getFile(const QString &agentName,  const QString &fileToGet) con
         QByteArray imageData = QByteArray::fromBase64(args.value("photoB64", args.value("photo_b64", "")).toString().toLatin1());
         qint64 chatID = args.value("chatId", args.value("chadId", chatId)).toLongLong();
 
-        emit requestReqAgent(prompt, chatID, targetAgent, imageData );
+        reqAgent(prompt, chatID, targetAgent,source,0,imageData );
     }
 
-    if (args.contains("messages") && role == Constants::RoleOrchestrator) {
-        QVariantList msgList = args.value("messages").toList();
-        QList<DelayedMessage> delayedMsgs;
-        QString fullAiResponse;
+    if (args.contains("messages")) {
+        const AggregatedMessages agg = MessageAggregator(args.value("messages").toList());
 
-        for (const QVariant &item : msgList) {
-            QVariantMap msgMap = item.toMap();
+        if (!agg.messages.isEmpty() && chatId != 0) {
+            if(source == MessageSource::Telegram){
+                emit requestSendMessagesDelayed(chatId, agg.messages);
 
-            QString text = msgMap.value("text").toString().trimmed();
-            int delay = msgMap.value("delay", 0).toInt();
-
-
-            QString stickerId;
-            if (msgMap.contains("stickerId")) {
-                stickerId = msgMap.value("stickerId").toString().trimmed();
-            } else if (msgMap.contains("sticker")) {
-                stickerId = msgMap.value("sticker").toString().trimmed();
-            }
-            QString photoUrl;
-            if (msgMap.contains("photoUrl")) {
-                photoUrl = msgMap.value("photoUrl").toString().trimmed();
-            } else if (msgMap.contains("photoUrl")) {
-                photoUrl = msgMap.value("photoUrl").toString().trimmed();
-            }
-
-
-            if (text.isEmpty() && stickerId.isEmpty()) {
-                continue;
-            }
-
-            DelayedMessage dMsg;
-            dMsg.text = text;
-            dMsg.stickerId = stickerId;
-            dMsg.delay = delay;
-            dMsg.photoUrl = photoUrl;
-            delayedMsgs.append(dMsg);
-
-            if (!text.isEmpty()) {
-                if (!fullAiResponse.isEmpty()) fullAiResponse += "\n";
-                fullAiResponse += text;
+            }else if(source == MessageSource::UI){
+                emit requestSendMessagesToUIDelayed(chatId, agg.messages);
             }
         }
-        if (!delayedMsgs.isEmpty() && chatId != 0) {
-            emit requestSendMessagesDelayed(chatId, delayedMsgs);
-        }
 
-        if (!fullAiResponse.isEmpty() && chatId != 0) {
+        if (!agg.fullAiResponse.isEmpty() && chatId != 0) {
             QString agentLabel = QString("[Ответ от агента: %1]").arg(callerAgentName);
-            FileManager::SaveMessage(chatId, userText, fullAiResponse);
+            FileManager::SaveMessage(chatId, userText, agg.fullAiResponse);
         }
     }
 }

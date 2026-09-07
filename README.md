@@ -1,4 +1,4 @@
-# MCP_Agent
+# MAS
 
 A Qt/C++ Telegram bot that acts as an **LLM-driven multi-agent orchestrator**. A single "Orchestrator" agent (Главный агент) talks to the user on Telegram, and can dynamically create, edit, rename, and delete specialized "sub-agents" — each with its own prompt files — and delegate tasks to them. All reasoning is powered by Google's Gemini API, with structured JSON function-calling used to control the bot's behavior.
 

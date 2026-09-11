@@ -76,7 +76,7 @@ static bool decodeChunkedBody(const QByteArray &chunked, QByteArray &outDecoded)
     }
     return false;
 }
-void Requests::apiCall(QObject *parent, const QString &host, const QString &path,
+void Requests::apiCall(QObject *parent, const QString &host, const QString &path,  const QString &method,
                        const QJsonObject &body,
                        const QMap<QString, QString> &headers,
                        std::function<void(const QJsonObject &)> callback)
@@ -86,10 +86,10 @@ void Requests::apiCall(QObject *parent, const QString &host, const QString &path
     // Обязательно инициализируем чистый буфер для каждого нового запроса
     socket->setProperty("_buf", QByteArray());
 
-    QObject::connect(socket, &QSslSocket::encrypted, socket, [socket, host, path, body, headers]() {
+    QObject::connect(socket, &QSslSocket::encrypted, socket, [socket, host, path, body, headers, method]() {
         const QByteArray payload = QJsonDocument(body).toJson(QJsonDocument::Compact);
         QByteArray request;
-        request += "POST " + path.toUtf8() + " HTTP/1.1\r\n";
+        request += method.toUtf8() + " " + path.toUtf8() + " HTTP/1.1\r\n";
         request += "Host: " + host.toUtf8() + "\r\n";
         request += "Content-Type: application/json\r\n";
         request += "Content-Length: " + QByteArray::number(payload.size()) + "\r\n";
@@ -140,17 +140,18 @@ void Requests::apiCall(QObject *parent, const QString &host, const QString &path
             finalBody = rawBody;
         }
 
+        QJsonObject responseJson;
         QJsonParseError parseError;
         const auto doc = QJsonDocument::fromJson(finalBody, &parseError);
-        if (parseError.error != QJsonParseError::NoError) {
-            qWarning() << "Requests: JSON parse error:" << parseError.errorString()
-            << "\nRaw Body:" << finalBody.left(300);
-            callback(QJsonObject());
-            socket->deleteLater();
-            return;
+
+        if (parseError.error == QJsonParseError::NoError && doc.isObject()) {
+            responseJson = doc.object();
+        } else {
+            responseJson["is_html"] = true;
+            responseJson["raw_content"] = QString::fromUtf8(finalBody);
         }
 
-        callback(doc.object());
+        callback(responseJson);
         socket->deleteLater();
     });
 

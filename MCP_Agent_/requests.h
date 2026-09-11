@@ -12,7 +12,7 @@ class Requests
 {
 public:
     Requests();
-    static void apiCall(QObject *parent, const QString &host, const QString &path,
+    static void apiCall(QObject *parent, const QString &host, const QString &path,  const QString &method,
                  const QJsonObject &body,
                  const QMap<QString, QString> &headers,
                  std::function<void(const QJsonObject &)> callback);

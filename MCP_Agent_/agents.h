@@ -41,6 +41,7 @@ public:
     QStringList listAgents() const;
     void executeCall(const QString &id, const QString &agentName, const QVariantMap &args, const QString &functionName, qint64 chatId, const QString &userText, const QString &role, MessageSource source);
     void reqAgent(const QString &userText, qint64 chatId,const QString &agentName, MessageSource source,int retryCount = 0 ,const QByteArray &imageData = QByteArray()  );
+    bool RetryReq(const QJsonObject &response,int retryCount,const QString &userText, qint64 chatId,const QString &agentName,MessageSource source, const QByteArray &imageData = QByteArray());
     void checkreq(const QJsonObject &response, qint64 chatId, const QString &text, const QMap<QString, QString> &nums, MessageSource source );
     void setGeminiKey(const QString &Key);
 signals:

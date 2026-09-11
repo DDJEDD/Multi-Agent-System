@@ -21,6 +21,33 @@ agents::agents(QObject *parent) : QObject(parent) {
 void agents::setGeminiKey(const QString &key){
     geminiKey=key;
 }
+
+bool agents::RetryReq(const QJsonObject &response,int retryCount,const QString &userText, qint64 chatId,const QString &agentName,MessageSource source, const QByteArray &imageData){
+    if (response.contains("error")) {
+        int errorCode = response["error"].toObject()["code"].toInt();
+        bool isRetryable = (errorCode == 503 || errorCode == 429 || errorCode == 500);
+
+        if (isRetryable && retryCount < kMaxRetries) {
+            int delayMs = kRetryBaseDelayMs * (1 << retryCount);
+            qWarning() << "[Agents] Ошибка" << errorCode
+                       << "от Gemini, повтор запроса через" << delayMs << "мс. Попытка №"
+                       << (retryCount + 1) << "из" << kMaxRetries;
+
+            QTimer::singleShot(delayMs, this, [this, userText, chatId, agentName, source, imageData, retryCount]() {
+                reqAgent(userText, chatId, agentName, source,retryCount + 1,imageData );
+            });
+            return true;
+        }
+
+        if (isRetryable) {
+            qWarning() << "[Agents] Исчерпаны попытки повтора после ошибки" << errorCode;
+            emit requestError("GEMINI_UNAVAILABLE", "Сервис Gemini временно недоступен, попробуйте позже.");
+            return true;
+        }
+    }
+    return false;
+
+}
 void agents::reqAgent(const QString &userText, qint64 chatId,const QString &agentName,MessageSource source,int retryCount,const QByteArray &imageData) {
 
 
@@ -69,34 +96,15 @@ void agents::reqAgent(const QString &userText, qint64 chatId,const QString &agen
 
 
     QMap<QString, QString> nums = finaluserText.numbers;
-    requests->apiCall(this, aiHost, aiPath, body, {},
+    requests->apiCall(this, aiHost, aiPath,"POST" ,body, {},
                       [this, chatId, userText, agentName, source, imageData, nums, retryCount](const QJsonObject &response) {
+        bool res = RetryReq(response, retryCount, userText, chatId, agentName, source, imageData);
+        if(!res){
+            checkreq(response, chatId, userText, nums, source);
+        }
+        }
 
-                          if (response.contains("error")) {
-                              int errorCode = response["error"].toObject()["code"].toInt();
-                              bool isRetryable = (errorCode == 503 || errorCode == 429 || errorCode == 500);
-
-                              if (isRetryable && retryCount < kMaxRetries) {
-                                  int delayMs = kRetryBaseDelayMs * (1 << retryCount);
-                                  qWarning() << "[Agents] Ошибка" << errorCode
-                                             << "от Gemini, повтор запроса через" << delayMs << "мс. Попытка №"
-                                             << (retryCount + 1) << "из" << kMaxRetries;
-
-                                  QTimer::singleShot(delayMs, this, [this, userText, chatId, agentName, source, imageData, retryCount]() {
-                                      reqAgent(userText, chatId, agentName, source,retryCount + 1,imageData );
-                                  });
-                                  return;
-                              }
-
-                              if (isRetryable) {
-                                  qWarning() << "[Agents] Исчерпаны попытки повтора после ошибки" << errorCode;
-                                  emit requestError("GEMINI_UNAVAILABLE", "Сервис Gemini временно недоступен, попробуйте позже.");
-                                  return;
-                              }
-                          }
-
-                          checkreq(response, chatId, userText, nums, source);
-                      });
+    );
 }
 
 void agents::checkreq(const QJsonObject &response, qint64 chatId, const QString &text, const QMap<QString, QString> &nums, MessageSource source) {
@@ -117,7 +125,6 @@ void agents::checkreq(const QJsonObject &response, qint64 chatId, const QString 
         emit requestError("GEMINI_JSON_ERROR", "Не удалось распарсить ответ от Gemini или стек вызовов пуст.");
         return;
     }
-
     const QList<AgentCall> &calls = *optCalls;
     qDebug() << "[TgBot] Получено вызовов сабагентов:" << calls.size();
 
@@ -340,6 +347,37 @@ void agents::executeCall(const QString &id, const QString &callerAgentName, cons
 
         reqAgent(prompt, chatID, targetAgent,source,0,imageData );
     }
+    else if (functionName == "reqSite"){
+        QString host = args.value("host", args.value("host", callerAgentName).toString()).toString().trimmed();
+        QString path = args.value("path", args.value("path", callerAgentName).toString()).toString().trimmed();
+        QString method = args.value("method", args.value("method", callerAgentName).toString()).toString().trimmed();
+        qint64 chatID = args.value("chatId", args.value("chadId", chatId)).toLongLong();
+        if(method.isEmpty()){
+            method = "POST";
+        }
+        QJsonObject body = args.value("body").value<QJsonObject>();
+        QMap<QString, QString> headers;
+        QJsonObject headersObj = args.value("headers").toJsonObject();
+
+        for (auto it = headersObj.constBegin(); it != headersObj.constEnd(); ++it) {
+            headers.insert(it.key(), it.value().toString());
+        }
+
+        requests->apiCall(this, host, path, method, body, headers, [this, chatID, callerAgentName,source](const QJsonObject &response) {
+
+            QString content;
+
+            if (response.contains("is_html")) {
+                content = response.value("raw_content").toString();
+                qDebug() << "Успешно скрапнули HTML страницы!";
+            } else {
+                content = QJsonDocument(response).toJson(QJsonDocument::Compact);
+            }
+
+            reqAgent("site info: " + content, chatID, callerAgentName, source, 0);
+        });
+    }
+
 
     if (args.contains("messages")) {
         const AggregatedMessages agg = MessageAggregator(args.value("messages").toList());

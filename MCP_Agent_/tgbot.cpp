@@ -66,7 +66,7 @@ void TgBot::downloadFile(const QString &fileId, std::function<void(const QByteAr
     QString path = QString("/bot%1/getFile").arg(token);
     QJsonObject body{{"file_id", fileId}};
 
-    requests->apiCall(this, host, path, body, {}, [this, callback](const QJsonObject &resp) {
+    requests->apiCall(this, host, path,"POST" ,body, {}, [this, callback](const QJsonObject &resp) {
         if (!resp.value("ok").toBool()) {
             qWarning() << "Ошибка получения файла из Telegram:" << resp;
             callback(QByteArray());
@@ -108,7 +108,7 @@ void TgBot::poll() {
     const QString path = QString("/bot%1/getUpdates").arg(token);
     QJsonObject body{{"timeout", 30}, {"offset", offset}};
 
-    requests->apiCall(this, host, path, body, {}, [this](const QJsonObject &resp) {
+    requests->apiCall(this, host, path,"POST" ,body, {}, [this](const QJsonObject &resp) {
         if (!resp.value("ok").toBool()) {
             qWarning() << "getUpdates вернул ошибку:" << resp;
             poll();
@@ -154,7 +154,7 @@ void TgBot::poll() {
 void TgBot::sendMessage(qint64 chatId, const QString &text) {
     const QString path = QString("/bot%1/sendMessage").arg(token);
     QJsonObject body{{"chat_id", chatId}, {"text", text}, {"parse_mode", "HTML"}};
-    requests->apiCall(this, host, path, body, {}, [](const QJsonObject &) {});
+    requests->apiCall(this, host, path,"POST" ,body, {}, [](const QJsonObject &) {});
 }
 
 void TgBot::sendAnimation(qint64 chatId, const QString &animationUrl, const QString &caption) {
@@ -166,7 +166,7 @@ void TgBot::sendAnimation(qint64 chatId, const QString &animationUrl, const QStr
         {"parse_mode", "HTML"}
     };
 
-    requests->apiCall(this, host, path, body, {}, [this, chatId, caption](const QJsonObject &resp) {
+    requests->apiCall(this, host, path,"POST" ,body, {}, [this, chatId, caption](const QJsonObject &resp) {
         if (!resp.value("ok").toBool()) {
             qWarning() << "sendAnimation failed:" << resp["description"].toString();
             qWarning() << "Falling back to sending text message only...";
@@ -188,7 +188,7 @@ void TgBot::sendPhoto(qint64 chatId, const QString &photoUrl, const QString &cap
         {"parse_mode", "HTML"}
     };
 
-    requests->apiCall(this,host,path,body,{},[this, chatId, caption](const QJsonObject &resp) {
+    requests->apiCall(this,host,path,"POST",body,{},[this, chatId, caption](const QJsonObject &resp) {
 
         if (!resp.value("ok").toBool()) {
             qWarning() << "sendPhoto failed:"
@@ -212,7 +212,7 @@ void TgBot::sendSticker(qint64 chatId, const QString &stickerId)
         {"sticker", stickerId}
     };
 
-    requests->apiCall( this, host, path,body,{}, [](const QJsonObject &resp) {
+    requests->apiCall( this, host, path,"POST",body,{}, [](const QJsonObject &resp) {
         if (!resp.value("ok").toBool()) {
             qWarning() << "sendSticker failed:"
                        << resp["description"].toString();
@@ -228,7 +228,7 @@ void TgBot::sendTyping(qint64 chatId) {
         {"action", "typing"}
     };
 
-    requests->apiCall(this, host, path, body, {}, [](const QJsonObject &) {});
+    requests->apiCall(this, host, path, "POST",body, {}, [](const QJsonObject &) {});
 }void TgBot::sendMessagesDelayed(qint64 chatId, const QList<DelayedMessage> &messages)
 {
     if (messages.isEmpty()) return;

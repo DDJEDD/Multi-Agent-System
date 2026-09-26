@@ -11,18 +11,16 @@
 #include <QPixmap>
 #include <QEvent>
 
-// >>> ВАЖНО: это базовые классы для наших виджетов ниже (AnimatedIconButton
-// наследует QPushButton, ClickableLabel наследует QLabel и т.д.) — компилятору
-// нужен ПОЛНЫЙ тип, поэтому здесь #include, а не forward declaration.
+// Widget базові класи (повні типи потрібні компілятору)
 #include <QPushButton>
 #include <QLabel>
 #include <QFrame>
 #include <QLineEdit>
 
 #include "agents.h" // agents, DelayedMessage, MessageSource
+#include "telegramaccountclient.h" // TDLib client for account
 
-// Эти классы используются только как указатели-поля/параметры — форвард-
-// деклараций достаточно.
+// Форвард-декларації для важких UI-класів
 class QVBoxLayout;
 class QHBoxLayout;
 class QScrollArea;
@@ -40,16 +38,17 @@ QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
 QT_END_NAMESPACE
 
-// ===========================================================================
-// AnimatedBackdrop — анимированный фон окна (blobs/aurora/particles/starfall/
-// картинка/gif). Используется как central widget-обёртка.
-// ===========================================================================
+// ---------------------------------------------------------------------------
+// AnimatedBackdrop, NetworkBackdrop, ToggleSwitch, AnimatedIconButton,
+// AgentAvatar, ClickableLabel, ClickableFrame, SubagentCard — оголошення
+// (не змінені, лишаю як у тебе)
+// ---------------------------------------------------------------------------
+
 class AnimatedBackdrop : public QWidget
 {
     Q_OBJECT
 public:
     explicit AnimatedBackdrop(QWidget *parent = nullptr);
-
     int contentMargin() const { return m_margin; }
 
 protected:
@@ -69,15 +68,11 @@ private:
     int m_margin = 0;
 };
 
-// ===========================================================================
-// NetworkBackdrop — фон для панелей/карточек (сетка узлов или звездопад).
-// ===========================================================================
 class NetworkBackdrop : public QWidget
 {
     Q_OBJECT
 public:
     enum class Surface { Panel, Card, Window };
-
     explicit NetworkBackdrop(Surface surface, QWidget *parent = nullptr);
 
 protected:
@@ -94,9 +89,6 @@ private:
     qreal m_phase = 0.0;
 };
 
-// ===========================================================================
-// ToggleSwitch — переключатель вкл/выкл с анимацией движения ползунка.
-// ===========================================================================
 class ToggleSwitch : public QWidget
 {
     Q_OBJECT
@@ -123,9 +115,6 @@ private:
     QPropertyAnimation *m_anim = nullptr;
 };
 
-// ===========================================================================
-// AnimatedIconButton — кнопка-иконка с поворотом при наведении.
-// ===========================================================================
 class AnimatedIconButton : public QPushButton
 {
     Q_OBJECT
@@ -154,15 +143,11 @@ private:
     qreal m_spin = 0.0;
 };
 
-// ===========================================================================
-// AgentAvatar — круглый аватар с инициалами и градиентом по имени агента.
-// ===========================================================================
 class AgentAvatar : public QWidget
 {
     Q_OBJECT
 public:
     explicit AgentAvatar(QWidget *parent = nullptr);
-
     void setAgentName(const QString &name);
 
 protected:
@@ -173,9 +158,6 @@ private:
     int m_paletteIndex = 0;
 };
 
-// ===========================================================================
-// ClickableLabel / ClickableFrame — простые кликабельные обёртки.
-// ===========================================================================
 class ClickableLabel : public QLabel
 {
     Q_OBJECT
@@ -195,7 +177,6 @@ class ClickableFrame : public QFrame
     Q_OBJECT
 public:
     explicit ClickableFrame(QWidget *parent = nullptr);
-
     void setSelected(bool selected);
 
 signals:
@@ -212,14 +193,10 @@ protected:
 
 private:
     void applyStyle();
-
     bool m_selected = false;
     bool m_hovered = false;
 };
 
-// ===========================================================================
-// SubagentCard — карточка субагента в боковой панели.
-// ===========================================================================
 class SubagentCard : public QFrame
 {
     Q_OBJECT
@@ -392,8 +369,8 @@ private:
 
     Ui::MainWindow *ui = nullptr;
     agents *m_agentManager = nullptr;
+    TelegramAccountClient *m_telegramAccountClient = nullptr;
 
-    // --- state ---
     QString m_mainAgentName;
     QString m_mainAgentRole;
     QString m_activeAgentId;

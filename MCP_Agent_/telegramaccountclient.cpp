@@ -20,11 +20,13 @@ struct TdJsonApi
     using SendFn = void (*)(void *, const char *);
     using ReceiveFn = const char *(*)(void *, double);
     using DestroyFn = void (*)(void *);
+    using ExecuteFn = const char *(*)(void *, const char *);
 
     CreateFn create = nullptr;
     SendFn send = nullptr;
     ReceiveFn receive = nullptr;
     DestroyFn destroy = nullptr;
+    ExecuteFn execute = nullptr;
     QString error;
 
     bool isLoaded() const { return create && send && receive && destroy; }
@@ -37,13 +39,22 @@ const TdJsonApi &tdJson()
     static const TdJsonApi api = [] {
         TdJsonApi result;
 
+#if defined(Q_OS_MACOS)
+        const QString fileName = QStringLiteral("libtdjson.dylib");
+#elif defined(Q_OS_WIN)
+        const QString fileName = QStringLiteral("tdjson.dll");
+#else
+        const QString fileName = QStringLiteral("libtdjson.so");
+#endif
+        // Точне ім'я файлу під ОС: інакше QLibrary може схопити чужий
+        // libtdjson.so (Linux) поруч і не спробувати .dylib.
         const QStringList candidates = {
-            QCoreApplication::applicationDirPath() + "/tdjson",
-            QCoreApplication::applicationDirPath() + "/../Frameworks/tdjson",
-            QString(APP_SRC_DIR) + "/tdjson",
-            QStringLiteral("tdjson"),
-            QStringLiteral("/opt/homebrew/lib/tdjson"),
-            QStringLiteral("/usr/local/lib/tdjson"),
+            QCoreApplication::applicationDirPath() + "/" + fileName,
+            QCoreApplication::applicationDirPath() + "/../Frameworks/" + fileName,
+            QString(APP_SRC_DIR) + "/" + fileName,
+            fileName,
+            QStringLiteral("/opt/homebrew/lib/") + fileName,
+            QStringLiteral("/usr/local/lib/") + fileName,
         };
 
         static QLibrary library;
@@ -60,10 +71,18 @@ const TdJsonApi &tdJson()
             return result;
         }
 
+        qInfo() << "[Telegram] TDLib:" << library.fileName();
+
         result.create = reinterpret_cast<TdJsonApi::CreateFn>(library.resolve("td_json_client_create"));
         result.send = reinterpret_cast<TdJsonApi::SendFn>(library.resolve("td_json_client_send"));
         result.receive = reinterpret_cast<TdJsonApi::ReceiveFn>(library.resolve("td_json_client_receive"));
         result.destroy = reinterpret_cast<TdJsonApi::DestroyFn>(library.resolve("td_json_client_destroy"));
+
+        result.execute = reinterpret_cast<TdJsonApi::ExecuteFn>(library.resolve("td_json_client_execute"));
+
+        // Лише помилки TDLib у лог, інакше він засипає консоль службовими рядками.
+        if (result.execute)
+            result.execute(nullptr, R"({"@type":"setLogVerbosityLevel","new_verbosity_level":1})");
 
         if (!result.isLoaded())
             result.error = QStringLiteral("Бібліотека TDLib (%1) не містить потрібних функцій td_json_client_*.")
@@ -229,13 +248,16 @@ void TelegramAccountClient::receiveTdlibResponse()
     if (!m_client)
         return;
 
-    const char *response =
-        tdJson().receive(m_client, 0.01);
+    // Забираємо всі відповіді, що накопичились (TDLib шле десятки оновлень поспіль),
+    // але не більше 500 за тік, щоб не блокувати UI.
+    for (int i = 0; i < 500 && m_client; ++i) {
+        const char *response = tdJson().receive(m_client, 0.0);
 
-    if (!response)
-        return;
+        if (!response)
+            return;
 
-    processResponse(QString::fromUtf8(response));
+        processResponse(QString::fromUtf8(response));
+    }
 }
 
 void TelegramAccountClient::processResponse(const QString &json)

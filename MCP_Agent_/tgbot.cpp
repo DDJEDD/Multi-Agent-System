@@ -13,8 +13,10 @@ TgBot::TgBot(QObject *parent) : QObject(parent) {
 
     QString token = settings.value("telegram_token").toString();
     setToken(token.toUtf8());
-    if (token.isEmpty()) {
-        qWarning() << "ВНИМАНИЕ: telegram_token не найден в config.ini!";
+    // Справжній токен бота має вигляд "123456:ABC...", без двокрапки це заглушка.
+    const bool tokenValid = token.contains(':');
+    if (!tokenValid) {
+        qWarning() << "ВНИМАНИЕ: telegram_token в config.ini пустой или неверный — Telegram-бот не запущен.";
     }
     m_agents = new agents(this);
     connect(m_agents, &agents::requestSendMessagesDelayed,
@@ -23,7 +25,8 @@ TgBot::TgBot(QObject *parent) : QObject(parent) {
     connect(m_agents, &agents::requestSendPhoto,
             this, &TgBot::sendPhoto);
 
-    poll();
+    if (tokenValid)
+        poll();
 
 }
 
@@ -110,8 +113,14 @@ void TgBot::poll() {
 
     requests->apiCall(this, host, path,"POST" ,body, {}, [this](const QJsonObject &resp) {
         if (!resp.value("ok").toBool()) {
-            qWarning() << "getUpdates вернул ошибку:" << resp;
-            poll();
+            const int code = resp.value("error_code").toInt();
+            // 401/404 — токен неверный: повторять бессмысленно.
+            if (code == 401 || code == 404) {
+                qWarning() << "getUpdates: Telegram не принимает telegram_token из config.ini — бот остановлен.";
+                return;
+            }
+            qWarning() << "getUpdates вернул ошибку, повтор через 5 с:" << resp;
+            QTimer::singleShot(5000, this, &TgBot::poll);
             return;
         }
 

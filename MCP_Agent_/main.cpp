@@ -5,13 +5,17 @@
 #include <QLoggingCategory>
 #include "QLabel"
 #include <QSslSocket>
-
+#include "SkillManager.h"
 int main(int argc, char *argv[])
 {
     QApplication a(argc, argv);
     qputenv("QT_ASSUME_STDERR_HAS_CONSOLE", "1");
     qInfo() << "SSL:" << QSslSocket::supportsSsl() << QSslSocket::sslLibraryVersionString();
-
+    SkillManager manager;
+    QStringList list = manager.listPlugins();
+    qDebug() << list;
+    QString file = manager.getSkilsFile("telegram");
+    qDebug() << file;
     agents *sharedAgents = new agents();
     TgBot bot(sharedAgents);
     MainWindow w(sharedAgents);

@@ -16,6 +16,7 @@ SOURCES += \
     mainwindow.cpp \
     phonenumber.cpp \
     requests.cpp \
+    skillmanager.cpp \
     tgbot.cpp
 
 HEADERS += \
@@ -25,6 +26,7 @@ HEADERS += \
     mainwindow.h \
     phonenumber.h \
     requests.h \
+    skillmanager.h \
     tgbot.h
 
 FORMS += \

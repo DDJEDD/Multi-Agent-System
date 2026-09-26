@@ -5,7 +5,7 @@
 #include <QObject>
 #include "jsonparser.h"
 #include "phonenumber.h"
-#include "requests.h"
+#include "skillmanager.h"
 static constexpr int kMaxRetries = 5;
 static constexpr int kRetryBaseDelayMs = 1000;
 
@@ -27,7 +27,7 @@ class agents : public QObject
 private:
     QString geminiKey;
     phonenumber *number;
-    Requests *requests;
+    SkillManager *skillManager;
 public:
     explicit agents(QObject *parent = nullptr);
 

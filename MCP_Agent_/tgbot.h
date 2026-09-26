@@ -15,7 +15,6 @@
 class TgBot : public QObject
 {
     Q_OBJECT
-    Requests *requests;
     phonenumber *phone;
     agents *m_agents;
     QString token;

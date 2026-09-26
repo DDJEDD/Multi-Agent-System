@@ -8,8 +8,11 @@
 #include <QJsonArray>
 #include <QSettings>
 #include <QTimer>
+#include "requests.h"
+#include <QProcess>
 agents::agents(QObject *parent) : QObject(parent) {
     number = new phonenumber(this);
+    skillManager = new SkillManager(this);
     QSettings settings(QString(APP_SRC_DIR) + "/config.ini", QSettings::IniFormat);
     QString geminiKey = settings.value("gemini_api_key").toString();
     setGeminiKey(geminiKey);
@@ -48,6 +51,35 @@ bool agents::RetryReq(const QJsonObject &response,int retryCount,const QString &
     return false;
 
 }
+static void runCmd(QObject *context, const QString &program, const QStringList &args, int timeoutMs,
+                   std::function<void(QString result)> callback) {
+    QProcess *proc = new QProcess(context);
+    auto *timeoutTimer = new QTimer(proc);
+    timeoutTimer->setSingleShot(true);
+    auto done = std::make_shared<bool>(false);
+
+    QObject::connect(proc, &QProcess::finished, context,
+                     [proc, timeoutTimer, callback, done](int, QProcess::ExitStatus) {
+                         if (*done) return;
+                         *done = true;
+                         timeoutTimer->stop();
+                         QString out = QString::fromUtf8(proc->readAllStandardOutput());
+                         QString err = QString::fromUtf8(proc->readAllStandardError());
+                         callback(err.isEmpty() ? out : out + "\nSTDERR: " + err);
+                         proc->deleteLater();
+                     });
+
+    QObject::connect(timeoutTimer, &QTimer::timeout, context,
+                     [proc, callback, done]() {
+                         if (*done) return;
+                         *done = true;
+                         proc->kill();
+                         callback("ERROR: команда не завершилась вовремя (timeout)");
+                     });
+
+    timeoutTimer->start(timeoutMs);
+    proc->start(program, args);
+}
 void agents::reqAgent(const QString &userText, qint64 chatId,const QString &agentName,MessageSource source,int retryCount,const QByteArray &imageData) {
 
 
@@ -62,7 +94,10 @@ void agents::reqAgent(const QString &userText, qint64 chatId,const QString &agen
     QStringList agentNames = agents::listAgents();
     QString agentsListStr = "Доступные субагенты в системе: " + agentNames.join(", ");
 
-    QString final = agents::getFullPrompt(agentName) + "\nHISTORY:"  + "\n\n[СИСТЕМНАЯ СПРАВКА]\n" + agentsListStr + FileManager::GetOldMessages(chatId);
+    QStringList plugins = skillManager->listPlugins();
+    QString pluginsListStr = "Доступные плагины (для reqCMD): " + plugins.join(", ");
+    QString final = agents::getFullPrompt(agentName) + "\nHISTORY:"  + "\n\n[СИСТЕМНАЯ СПРАВКА]\n"
+                    + agentsListStr + "\n" + pluginsListStr + FileManager::GetOldMessages(chatId);
     textwithoutnum finaluserText = number->HideNumbers(userText);
     QString fullContextText = final + "\n" + finaluserText.usertext;
 
@@ -96,15 +131,15 @@ void agents::reqAgent(const QString &userText, qint64 chatId,const QString &agen
 
 
     QMap<QString, QString> nums = finaluserText.numbers;
-    requests->apiCall(this, aiHost, aiPath,"POST" ,body, {},
+    Requests::apiCall(this, aiHost, aiPath,"POST" ,body, {},
                       [this, chatId, userText, agentName, source, imageData, nums, retryCount](const QJsonObject &response) {
-        bool res = RetryReq(response, retryCount, userText, chatId, agentName, source, imageData);
-        if(!res){
-            checkreq(response, chatId, userText, nums, source);
-        }
-        }
+                          bool res = RetryReq(response, retryCount, userText, chatId, agentName, source, imageData);
+                          if(!res){
+                              checkreq(response, chatId, userText, nums, source);
+                          }
+                      }
 
-    );
+                      );
 }
 
 void agents::checkreq(const QJsonObject &response, qint64 chatId, const QString &text, const QMap<QString, QString> &nums, MessageSource source) {
@@ -145,7 +180,7 @@ QString agents::getAgentPath(const QString &agentName) const {
 }
 
 void agents::createAgent(const QString &agentName, const QString &purpose) {
-     QString dirpath = getAgentPath(agentName);
+    QString dirpath = getAgentPath(agentName);
 
     QDir agentDir = FileManager::createDirectory(dirpath);
 
@@ -294,7 +329,41 @@ void agents::executeCall(const QString &id, const QString &callerAgentName, cons
         emit requestThinkingContext("deleteAgent", "[Agents] Удаление агента:" + targetAgent);
         deleteAgent(targetAgent);
     }
+    else if(functionName == "reqCMD"){
+        QString program = args.value("program").toString().trimmed();
+        QStringList cmdArgs;
+        for (const QVariant &a : args.value("cmdArgs").toList()) cmdArgs << a.toString();
 
+        QStringList installedPlugins = skillManager->listPlugins();
+        if (program.isEmpty() || !installedPlugins.contains(program)) {
+            qWarning() << "[Agents] Ошибка: программа" << program << "не найдена среди установленных плагинов";
+            return;
+        }
+
+        runCmd(this, program, cmdArgs, 15000, [this, chatId, callerAgentName, source](QString result) {
+            reqAgent("cmd output: " + result, chatId, callerAgentName, source, 0);
+        });
+    }
+    else if (functionName == "getPluginSkill") {
+        QString targetPlugin = args.value("pluginName", args.value("plugin_name").toString()).toString().trimmed();
+
+        if (targetPlugin.isEmpty()) {
+            qWarning() << "[Agents] Ошибка: Имя плагина не указано в getPluginSkill!";
+            return;
+        }
+
+        emit requestThinkingContext("getPluginSkill", "[Agents] Запрос инструкции для плагина: " + targetPlugin);
+
+        QString skillContent = skillManager->getSkilsFile(targetPlugin);
+
+        QString resultMsg;
+        if (skillContent.isEmpty()) {
+            resultMsg = QString("Ошибка: Плагин '%1' не найден или у него нет файла SKILL.").arg(targetPlugin);
+        } else {
+            resultMsg = QString("Успешно получена инструкция для плагина '%1':\n%2").arg(targetPlugin, skillContent);
+        }
+        reqAgent(resultMsg, chatId, callerAgentName, source, 0);
+    }
     else if (functionName == "changeAgentName" && role == Constants::RoleOrchestrator) {
         QString oldName = args.value("oldName", args.value("old_name", callerAgentName).toString()).toString().trimmed();
         QString newName = args.value("newName", args.value("new_name").toString()).toString().trimmed();
@@ -331,7 +400,7 @@ void agents::executeCall(const QString &id, const QString &callerAgentName, cons
 
     else if(functionName == "reqAgent"){
         QString targetAgent = args.value("agentName", args.value("agent_name", callerAgentName).toString()).toString().trimmed();
-        if (role != "orchestrator" && targetAgent != "Главный агент") {
+        if (role != Constants::RoleOrchestrator && targetAgent != "Главный агент") {
             qWarning() << "[Agents] Ошибка безопасности: Субагент" << callerAgentName
                        << "пытается вызвать другого сабагента (" << targetAgent
                        << "). Разрешено вызывать только Главного агента!";
@@ -363,7 +432,7 @@ void agents::executeCall(const QString &id, const QString &callerAgentName, cons
             headers.insert(it.key(), it.value().toString());
         }
 
-        requests->apiCall(this, host, path, method, body, headers, [this, chatID, callerAgentName,source](const QJsonObject &response) {
+        Requests::apiCall(this, host, path, method, body, headers, [this, chatID, callerAgentName,source](const QJsonObject &response) {
 
             QString content;
 

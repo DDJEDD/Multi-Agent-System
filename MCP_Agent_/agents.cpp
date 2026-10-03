@@ -96,6 +96,7 @@ void agents::reqAgent(const QString &userText, qint64 chatId,const QString &agen
 
     QStringList plugins = skillManager->listPlugins();
     QString pluginsListStr = "Доступные плагины (для reqCMD): " + plugins.join(", ");
+    qDebug() << "доступные плагины:" << plugins.join(", ");
     QString final = agents::getFullPrompt(agentName) + "\nHISTORY:"  + "\n\n[СИСТЕМНАЯ СПРАВКА]\n"
                     + agentsListStr + "\n" + pluginsListStr + FileManager::GetOldMessages(chatId);
     textwithoutnum finaluserText = number->HideNumbers(userText);
@@ -335,12 +336,15 @@ void agents::executeCall(const QString &id, const QString &callerAgentName, cons
         for (const QVariant &a : args.value("cmdArgs").toList()) cmdArgs << a.toString();
 
         QStringList installedPlugins = skillManager->listPlugins();
-        if (program.isEmpty() || !installedPlugins.contains(program)) {
-            qWarning() << "[Agents] Ошибка: программа" << program << "не найдена среди установленных плагинов";
-            return;
-        }
+        if(program != "whoami"){
+            if (program.isEmpty() || !installedPlugins.contains(program)) {
 
-        runCmd(this, program, cmdArgs, 15000, [this, chatId, callerAgentName, source](QString result) {
+                qWarning() << "[Agents] Ошибка: программа" << program << "не найдена среди установленных плагинов";
+                return;
+            }
+        }
+        bool isCmdArgs = cmdArgs.isEmpty();
+        runCmd(this, program, isCmdArgs ? QStringList{" "} : cmdArgs, 15000, [this, chatId, callerAgentName, source](QString result) {
             reqAgent("cmd output: " + result, chatId, callerAgentName, source, 0);
         });
     }

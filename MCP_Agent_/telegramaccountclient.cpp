@@ -286,6 +286,20 @@ void TelegramAccountClient::processResponse(const QString &json)
         m_codeDialogOpened = false;
         m_passwordDialogOpened = false;
 
+        // Невірний код або пароль: стан авторизації не змінюється,
+        // тому TDLib сам не попросить ще раз — питаємо повторно.
+        if (errorMessage == "PHONE_CODE_INVALID" || errorMessage == "PHONE_CODE_EMPTY") {
+            QMessageBox::warning(m_dialogParent, "Telegram", "Невірний код. Спробуйте ще раз.");
+            QTimer::singleShot(0, this, &TelegramAccountClient::requestCodeFromUser);
+            return;
+        }
+
+        if (errorMessage == "PASSWORD_HASH_INVALID") {
+            QMessageBox::warning(m_dialogParent, "Telegram", "Невірний пароль 2FA. Спробуйте ще раз.");
+            QTimer::singleShot(0, this, &TelegramAccountClient::requestPasswordFromUser);
+            return;
+        }
+
         showError(
             QString("Помилка Telegram %1: %2")
                 .arg(errorCode)
@@ -449,7 +463,7 @@ void TelegramAccountClient::requestCodeFromUser()
         QInputDialog::getText(
             m_dialogParent,
             "Код Telegram",
-            "Введіть код підтвердження Telegram:",
+            "Введіть код, який Telegram надіслав у застосунок\n(чат «Telegram») або в SMS:",
             QLineEdit::Normal,
             QString(),
             &accepted);
@@ -462,7 +476,8 @@ void TelegramAccountClient::requestCodeFromUser()
     }
 
     if (code.trimmed().isEmpty()) {
-        showError("Код підтвердження порожній.");
+        setStatus("Код порожній — введіть код ще раз.");
+        QTimer::singleShot(0, this, &TelegramAccountClient::requestCodeFromUser);
         return;
     }
 
@@ -495,7 +510,8 @@ void TelegramAccountClient::requestPasswordFromUser()
     }
 
     if (password.isEmpty()) {
-        showError("Пароль 2FA порожній.");
+        setStatus("Пароль порожній — введіть пароль ще раз.");
+        QTimer::singleShot(0, this, &TelegramAccountClient::requestPasswordFromUser);
         return;
     }
 

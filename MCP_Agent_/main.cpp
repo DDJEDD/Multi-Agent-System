@@ -5,7 +5,7 @@
 #include <QLoggingCategory>
 #include "QLabel"
 #include <QSslSocket>
-#include "SkillManager.h"
+#include "skillmanager.h"
 int main(int argc, char *argv[])
 {
     QApplication a(argc, argv);

@@ -1,6 +1,6 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
-
+#include <QButtonGroup>
 #include <QLabel>
 #include <QLineEdit>
 #include <QVBoxLayout>
@@ -47,6 +47,12 @@
 #include <QClipboard>
 #include <cmath>
 #include <utility>
+#include <QResizeEvent>
+#include <QFormLayout>
+#include <QSharedPointer>
+#include <functional>
+
+#include "telegramaccountclient.h" // можно включить, но header уже подключён в mainwindow.h
 
 // ---------------------------------------------------------------------------
 // Anonymous namespace: theming (interface layer) + min_info helpers (logic
@@ -94,11 +100,11 @@ struct ThemeFamily { QString id; QString label; QString lightId; QString darkId;
 QList<ThemeFamily> themeFamilies()
 {
     return {
-            {"neutral", "Обычная", "light", "dark"},
-            {"pink",    "Pink",    "pink",  "pinkdark"},
-            {"nord",    "Nord",    "nordlight", "nord"},
-            {"sunset",  "Sunset",  "sunsetlight", "sunset"},
-            };
+             {"neutral", "Обычная", "light", "dark"},
+             {"pink",    "Pink",    "pink",  "pinkdark"},
+             {"nord",    "Nord",    "nordlight", "nord"},
+             {"sunset",  "Sunset",  "sunsetlight", "sunset"},
+             };
 }
 
 QString themeDisplayName(const QString &themeId)
@@ -332,10 +338,10 @@ void AnimatedBackdrop::paintBlobs(QPainter &painter)
     const qreal span = qMax(w, h);
 
     const QList<Blob> blobs = {
-                               { w * 0.28, h * 0.26, 0.55, 0.42, 0.0, 1.4, span * 0.20, kAccent },
-                               { w * 0.78, h * 0.62, 0.40, 0.60, 2.1, 0.4, span * 0.18, kAccent2 },
-                               { w * 0.52, h * 0.88, 0.48, 0.35, 4.0, 2.6, span * 0.16, kAccentGreen },
-                               };
+                                { w * 0.28, h * 0.26, 0.55, 0.42, 0.0, 1.4, span * 0.20, kAccent },
+                                { w * 0.78, h * 0.62, 0.40, 0.60, 2.1, 0.4, span * 0.18, kAccent2 },
+                                { w * 0.52, h * 0.88, 0.48, 0.35, 4.0, 2.6, span * 0.16, kAccentGreen },
+                                };
 
     for (const auto &blob : blobs) {
         const qreal cx = blob.ax + std::sin(m_phase * blob.freqX + blob.phaseX) * w * 0.12;
@@ -381,11 +387,11 @@ void AnimatedBackdrop::paintParticles(QPainter &painter)
 {
     struct Spot { qreal nx, ny, phase, speed; };
     static const QList<Spot> spots = {
-                                      {0.02, 0.08, 0.0, 1.0}, {0.97, 0.15, 1.3, 0.8}, {0.06, 0.90, 2.6, 1.2},
-                                      {0.94, 0.85, 0.7, 0.9}, {0.35, 0.03, 2.1, 1.1}, {0.65, 0.97, 3.4, 0.7},
-                                      {0.03, 0.45, 1.8, 1.0}, {0.97, 0.55, 4.0, 0.8}, {0.20, 0.04, 2.9, 1.3},
-                                      {0.80, 0.96, 0.3, 0.9},
-                                      };
+                                       {0.02, 0.08, 0.0, 1.0}, {0.97, 0.15, 1.3, 0.8}, {0.06, 0.90, 2.6, 1.2},
+                                       {0.94, 0.85, 0.7, 0.9}, {0.35, 0.03, 2.1, 1.1}, {0.65, 0.97, 3.4, 0.7},
+                                       {0.03, 0.45, 1.8, 1.0}, {0.97, 0.55, 4.0, 0.8}, {0.20, 0.04, 2.9, 1.3},
+                                       {0.80, 0.96, 0.3, 0.9},
+                                       };
 
     const QStringList palette = {kAccent, kAccent2, kAccentGreen};
     const qreal w = width();
@@ -409,12 +415,12 @@ void AnimatedBackdrop::paintStarfall(QPainter &painter)
 {
     struct Meteor { qreal startX, startY, angle, trailLen, speed, offset; QString color; };
     static const QList<Meteor> meteors = {
-                                          {0.10, -0.05, 32.0, 0.20, 0.55, 0.00, kAccent},
-                                          {0.42, -0.08, 28.0, 0.16, 0.42, 0.40, kAccent2},
-                                          {0.68, -0.04, 36.0, 0.22, 0.65, 0.70, kAccent},
-                                          {0.25, -0.10, 30.0, 0.14, 0.38, 0.20, kAccentGreen},
-                                          {0.85, -0.06, 34.0, 0.24, 0.50, 0.85, kAccent2},
-                                          };
+                                           {0.10, -0.05, 32.0, 0.20, 0.55, 0.00, kAccent},
+                                           {0.42, -0.08, 28.0, 0.16, 0.42, 0.40, kAccent2},
+                                           {0.68, -0.04, 36.0, 0.22, 0.65, 0.70, kAccent},
+                                           {0.25, -0.10, 30.0, 0.14, 0.38, 0.20, kAccentGreen},
+                                           {0.85, -0.06, 34.0, 0.24, 0.50, 0.85, kAccent2},
+                                           };
 
     const qreal w = width();
     const qreal h = height();
@@ -496,13 +502,13 @@ void NetworkBackdrop::paintStarfall(QPainter &painter)
 {
     struct Meteor { qreal startX, startY, angle, trailLen, speed, offset; QString color; };
     static const QList<Meteor> meteors = {
-                                          {0.05, -0.06, 32.0, 0.22, 0.50, 0.00, kAccent},
-                                          {0.30, -0.10, 28.0, 0.18, 0.40, 0.35, kAccent2},
-                                          {0.55, -0.05, 34.0, 0.24, 0.58, 0.65, kAccent},
-                                          {0.78, -0.08, 30.0, 0.16, 0.36, 0.15, kAccentGreen},
-                                          {0.92, -0.06, 36.0, 0.20, 0.46, 0.85, kAccent2},
-                                          {0.18, -0.12, 26.0, 0.14, 0.32, 0.55, kAccent},
-                                          };
+                                           {0.05, -0.06, 32.0, 0.22, 0.50, 0.00, kAccent},
+                                           {0.30, -0.10, 28.0, 0.18, 0.40, 0.35, kAccent2},
+                                           {0.55, -0.05, 34.0, 0.24, 0.58, 0.65, kAccent},
+                                           {0.78, -0.08, 30.0, 0.16, 0.36, 0.15, kAccentGreen},
+                                           {0.92, -0.06, 36.0, 0.20, 0.46, 0.85, kAccent2},
+                                           {0.18, -0.12, 26.0, 0.14, 0.32, 0.55, kAccent},
+                                           };
 
     const qreal w = width();
     const qreal h = height();
@@ -545,13 +551,13 @@ void NetworkBackdrop::paintNodes(QPainter &painter)
 {
     struct Node { qreal nx, ny, freqX, freqY, phaseX, phaseY; };
     static const QList<Node> nodes = {
-                                      {0.10, 0.15, 0.25, 0.20, 0.0, 1.1}, {0.30, 0.08, 0.22, 0.28, 1.4, 0.3},
-                                      {0.55, 0.12, 0.20, 0.24, 2.6, 2.0}, {0.80, 0.20, 0.26, 0.18, 0.7, 1.6},
-                                      {0.90, 0.45, 0.24, 0.22, 3.1, 0.5}, {0.75, 0.70, 0.18, 0.26, 1.9, 2.4},
-                                      {0.50, 0.85, 0.22, 0.20, 0.4, 1.3}, {0.20, 0.78, 0.25, 0.24, 2.2, 0.8},
-                                      {0.08, 0.50, 0.20, 0.28, 1.0, 2.7}, {0.40, 0.45, 0.23, 0.21, 2.8, 1.5},
-                                      {0.62, 0.55, 0.19, 0.25, 0.2, 2.1}, {0.35, 0.65, 0.21, 0.23, 1.6, 0.6},
-                                      };
+                                       {0.10, 0.15, 0.25, 0.20, 0.0, 1.1}, {0.30, 0.08, 0.22, 0.28, 1.4, 0.3},
+                                       {0.55, 0.12, 0.20, 0.24, 2.6, 2.0}, {0.80, 0.20, 0.26, 0.18, 0.7, 1.6},
+                                       {0.90, 0.45, 0.24, 0.22, 3.1, 0.5}, {0.75, 0.70, 0.18, 0.26, 1.9, 2.4},
+                                       {0.50, 0.85, 0.22, 0.20, 0.4, 1.3}, {0.20, 0.78, 0.25, 0.24, 2.2, 0.8},
+                                       {0.08, 0.50, 0.20, 0.28, 1.0, 2.7}, {0.40, 0.45, 0.23, 0.21, 2.8, 1.5},
+                                       {0.62, 0.55, 0.19, 0.25, 0.2, 2.1}, {0.35, 0.65, 0.21, 0.23, 1.6, 0.6},
+                                       };
 
     const qreal w = width();
     const qreal h = height();
@@ -2371,8 +2377,99 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
                              ).arg(kBgWindow, kTextMain, kBgCard, kBorder, kAccent));
 
     auto *layout = new QVBoxLayout(&dialog);
-    layout->setContentsMargins(20, 20, 20, 20);
-    layout->setSpacing(10);
+    layout->setContentsMargins(20, 12, 20, 16);
+    layout->setSpacing(6);
+
+    // Перемикач сторінок: General / Services
+    constexpr int kSwH = 34, kSwPad = 3;
+    constexpr int kItemH = kSwH - kSwPad * 2;
+
+    // Панель на всю ширину: при зміні розміру перераховує кнопки та підсвічування
+    struct SwitchBar : QWidget {
+        std::function<void()> onResize;
+        using QWidget::QWidget;
+        void resizeEvent(QResizeEvent *e) override {
+            QWidget::resizeEvent(e);
+            if (onResize) onResize();
+        }
+    };
+
+    auto *pageSwitch = new SwitchBar(&dialog);
+    pageSwitch->setObjectName("cyberSwitch");
+    pageSwitch->setAttribute(Qt::WA_StyledBackground, true);
+    pageSwitch->setFixedHeight(kSwH);
+    pageSwitch->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    pageSwitch->setStyleSheet(
+        "#cyberSwitch { background: #0f1016; border: 1px solid #1f222e; border-radius: 12px; }"
+        "#cyberHighlight {"
+        "   border-radius: 9px;"
+        "   border: 1px solid rgba(255, 255, 255, 38);"
+        "   background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 1,"
+        "                               stop: 0 rgba(0, 240, 255, 45), stop: 1 rgba(255, 255, 255, 5));"
+        "}"
+        "#cyberSwitch QPushButton {"
+        "   background: transparent; border: none; border-radius: 9px; padding: 0;"
+        "   color: #5c6b7f; font-size: 12px; font-weight: 600; outline: none;"
+        "}"
+        "#cyberSwitch QPushButton:hover { color: #aeb9cc; }"
+        "#cyberSwitch QPushButton:checked { color: #ffffff; }"
+        "#cyberSwitch QPushButton:focus { border: 1px solid rgba(255, 255, 255, 180); }");
+
+    // Ковзне підсвічування (створюється першим, щоб кнопки були поверх)
+    auto *highlight = new QFrame(pageSwitch);
+    highlight->setObjectName("cyberHighlight");
+    highlight->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    highlight->setGeometry(kSwPad, kSwPad, 1, kItemH);
+
+    auto *glow = new QGraphicsDropShadowEffect(highlight);
+    glow->setOffset(0, 0);
+    glow->setBlurRadius(10);
+    glow->setColor(QColor(0, 240, 255, 150));
+    highlight->setGraphicsEffect(glow);
+
+    auto *switchGroup = new QButtonGroup(pageSwitch);
+    const QStringList switchTexts = {"General", "Services"};
+    QList<QPushButton *> switchButtons;
+    for (int i = 0; i < 2; ++i) {
+        auto *btn = new QPushButton(switchTexts[i], pageSwitch);
+        btn->setCheckable(true);
+        btn->setCursor(Qt::PointingHandCursor);
+        btn->setFocusPolicy(Qt::TabFocus);
+        switchGroup->addButton(btn, i);
+        switchButtons.append(btn);
+    }
+    switchButtons[0]->setChecked(true);
+
+    // transition: transform 0.5s (ефект "перельоту")
+    auto *slide = new QPropertyAnimation(highlight, "pos", pageSwitch);
+    slide->setDuration(500);
+    slide->setEasingCurve(QEasingCurve::OutBack);
+
+    pageSwitch->onResize = [=, this]() {
+        const int itemW = (pageSwitch->width() - kSwPad * 2) / 2;
+        for (int i = 0; i < 2; ++i)
+            switchButtons[i]->setGeometry(kSwPad + i * itemW, kSwPad, itemW, kItemH);
+        slide->stop();
+        highlight->setGeometry(kSwPad + qMax(0, switchGroup->checkedId()) * itemW, kSwPad, itemW, kItemH);
+    };
+
+    // @keyframes neon-pulse
+    auto *pulse = new QPropertyAnimation(glow, "blurRadius", pageSwitch);
+    pulse->setDuration(3000);
+    pulse->setKeyValueAt(0.0, 10.0);
+    pulse->setKeyValueAt(0.5, 14.0);
+    pulse->setKeyValueAt(1.0, 10.0);
+    pulse->setEasingCurve(QEasingCurve::InOutSine);
+    pulse->setLoopCount(-1);
+    pulse->start();
+
+    auto *pages = new QStackedWidget(&dialog);
+
+    // --- Сторінка General (весь попередній вміст діалогу) ---
+    auto *generalPage = new QWidget(pages);
+    auto *generalLayout = new QVBoxLayout(generalPage);
+    generalLayout->setContentsMargins(0, 0, 0, 0);
+    generalLayout->setSpacing(6);
 
     auto *nameLabel = new QLabel("Имя", &dialog);
     auto *nameEdit = new QLineEdit(name, &dialog);
@@ -2388,9 +2485,9 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
     auto *promptTabs = new QTabWidget(&dialog);
 
     static const QList<QPair<QString, QString>> promptParts = {
-                                                               {"soul", "Soul"},
-                                                               {"system_prompt", "System Prompt"},
-                                                               };
+                                                                {"soul", "Soul"},
+                                                                {"system_prompt", "System Prompt"},
+                                                                };
 
     QMap<QString, QTextEdit *> promptEdits;
     for (const auto &part : promptParts) {
@@ -2398,6 +2495,300 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
         edit->setPlainText(m_agentManager->getFile(backendAgentName, part.first));
         promptTabs->addTab(edit, part.second);
         promptEdits.insert(part.first, edit);
+    }
+
+    generalLayout->addWidget(nameLabel);
+    generalLayout->addWidget(nameEdit);
+    generalLayout->addWidget(roleLabel);
+    generalLayout->addWidget(roleEdit);
+    generalLayout->addWidget(promptLabel);
+    generalLayout->addWidget(promptTabs, 1);
+
+    // --- Сторінка Services: рядок на кожен сервіс (перемикач + кнопка "...") ---
+    auto *servicesPage = new QWidget(pages);
+    auto *servicesLayout = new QVBoxLayout(servicesPage);
+    servicesLayout->setContentsMargins(0, 0, 0, 0);
+    servicesLayout->setSpacing(6);
+
+    struct ServiceDef { QString id; QString name; };
+    static const QList<ServiceDef> kServices = {
+                                                 {"instagram", "Instagram"},
+                                                 {"telegram",  "Telegram"},
+                                                 {"whatsapp",  "WhatsApp"},
+                                                 {"discord",   "Discord"},
+                                                 };
+
+    // service id -> (поле -> значення). Заповнюється через діалог "...".
+    // TODO: підвантажувати/зберігати через m_agentManager замість локальної мапи.
+    auto serviceCreds = QSharedPointer<QMap<QString, QMap<QString, QString>>>::create();
+    auto serviceToggles = QSharedPointer<QMap<QString, QCheckBox *>>::create();
+
+    // Тумблер без тексту (iOS-подібний), з плавним рухом кружечка та світінням при увімкненні.
+    // Позиція анімується через QVariantAnimation, який щокадру перегенеровує QSS-градієнт,
+    // бо сам QSS transition/animation для індикатора не підтримує.
+    auto makeToggleQss = [kBgCard = kBgCard, kBorder = kBorder, kAccent = kAccent](qreal t) {
+        const qreal cx = 0.24 + t * (0.76 - 0.24);
+        const QString ring = t > 0.5 ? kAccent : kBorder;
+        const QString fill = t > 0.5 ? kAccent : kBgCard;
+        return QString(
+                   "QCheckBox::indicator {"
+                   "   width: 38px; height: 20px; border-radius: 10px;"
+                   "   border: 1px solid %1;"
+                   "   background: qradialgradient(cx:%2, cy:0.5, radius:0.42, fx:%2, fy:0.5,"
+                   "       stop:0 #ffffff, stop:0.62 #ffffff, stop:0.64 %3);"
+                   "}"
+                   ).arg(ring).arg(cx, 0, 'f', 3).arg(fill);
+    };
+
+    const QString dotsStyle = QString(
+                                  "QPushButton {"
+                                  "   background: transparent; border: none; color: %1;"
+                                  "   font-size: 18px; font-weight: 700; padding: 0 4px;"
+                                  "}"
+                                  "QPushButton:hover { color: %2; }"
+                                  ).arg(kTextMain, kAccent);
+
+    for (const auto &svc : kServices) {
+        auto *row = new QWidget(servicesPage);
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(4, 4, 4, 4);
+        rowLayout->setSpacing(8);
+
+        auto *label = new QLabel(svc.name, row);
+
+        auto *toggle = new QCheckBox(row);
+        toggle->setCursor(Qt::PointingHandCursor);
+        toggle->setFixedSize(38, 20);
+        toggle->setStyleSheet(makeToggleQss(0.0));
+        serviceToggles->insert(svc.id, toggle);
+
+        // М'яке світіння, що плавно з'являється при увімкненні
+        auto *toggleGlow = new QGraphicsDropShadowEffect(toggle);
+        toggleGlow->setOffset(0, 0);
+        toggleGlow->setBlurRadius(0);
+        toggleGlow->setColor(QColor(0, 240, 255, 160));
+        toggle->setGraphicsEffect(toggleGlow);
+
+        auto *togglePos = new QVariantAnimation(toggle);
+        togglePos->setDuration(220);
+        togglePos->setEasingCurve(QEasingCurve::OutCubic);
+        connect(togglePos, &QVariantAnimation::valueChanged, toggle, [toggle, makeToggleQss](const QVariant &v) {
+            toggle->setStyleSheet(makeToggleQss(v.toReal()));
+        });
+
+        auto *toggleGlowAnim = new QPropertyAnimation(toggleGlow, "blurRadius", toggle);
+        toggleGlowAnim->setDuration(220);
+
+        connect(toggle, &QCheckBox::toggled, toggle, [togglePos, toggleGlowAnim, toggleGlow](bool checked) {
+            const qreal current = togglePos->currentValue().isValid()
+            ? togglePos->currentValue().toReal()
+            : (checked ? 0.0 : 1.0);
+            togglePos->stop();
+            togglePos->setStartValue(current);
+            togglePos->setEndValue(checked ? 1.0 : 0.0);
+            togglePos->start();
+
+            toggleGlowAnim->stop();
+            toggleGlowAnim->setStartValue(toggleGlow->blurRadius());
+            toggleGlowAnim->setEndValue(checked ? 14.0 : 0.0);
+            toggleGlowAnim->start();
+        });
+
+        auto *dotsButton = new QPushButton(QString::fromUtf8("\xE2\x8B\xAF"), row); // ⋯
+        dotsButton->setStyleSheet(dotsStyle);
+        dotsButton->setCursor(Qt::PointingHandCursor);
+        dotsButton->setFixedSize(28, 28);
+
+        rowLayout->addWidget(label);
+        rowLayout->addStretch(1);
+        rowLayout->addWidget(toggle);
+        rowLayout->addWidget(dotsButton);
+        servicesLayout->addWidget(row);
+
+        connect(dotsButton, &QPushButton::clicked, &dialog, [this, &dialog, svc, serviceCreds]() {
+            QDialog credsDialog(&dialog);
+            credsDialog.setWindowTitle(svc.name);
+            credsDialog.setMinimumWidth(340);
+
+            auto *form = new QFormLayout(&credsDialog);
+            form->setContentsMargins(16, 16, 16, 16);
+            form->setSpacing(8);
+
+            QMap<QString, QLineEdit *> fields;
+            auto addField = [&](const QString &key, const QString &labelText, bool password = false) {
+                auto *edit = new QLineEdit((*serviceCreds)[svc.id].value(key), &credsDialog);
+                if (password)
+                    edit->setEchoMode(QLineEdit::Password);
+                form->addRow(labelText, edit);
+                fields.insert(key, edit);
+            };
+
+            if (svc.id == "telegram") {
+                addField("api_id", "API ID");
+                addField("api_hash", "API Hash", true);
+                addField("phone", "Номер телефону");
+
+                auto *connectTelegramButton =
+                    new QPushButton("Підключити Telegram", &credsDialog);
+
+                connectTelegramButton->setCursor(Qt::PointingHandCursor);
+                form->addRow(QString(), connectTelegramButton);
+
+                connect(connectTelegramButton,
+                        &QPushButton::clicked,
+                        &credsDialog,
+                        [this, &fields, svc, serviceCreds]() {
+                            const QString apiIdText =
+                                fields.value("api_id")->text().trimmed();
+
+                            const QString apiHash =
+                                fields.value("api_hash")->text().trimmed();
+
+                            const QString phone =
+                                fields.value("phone")->text().trimmed();
+
+                            bool ok = false;
+                            const qint32 apiId =
+                                apiIdText.toInt(&ok);
+
+                            if (!ok || apiId <= 0) {
+                                QMessageBox::warning(
+                                    this,
+                                    "Telegram",
+                                    "API ID має бути додатним числом.");
+                                return;
+                            }
+
+                            if (apiHash.isEmpty()) {
+                                QMessageBox::warning(
+                                    this,
+                                    "Telegram",
+                                    "API Hash не може бути порожнім.");
+                                return;
+                            }
+
+                            if (phone.isEmpty()) {
+                                QMessageBox::warning(
+                                    this,
+                                    "Telegram",
+                                    "Номер телефону не може бути порожнім.");
+                                return;
+                            }
+
+                            (*serviceCreds)[svc.id]["api_id"] = apiIdText;
+                            (*serviceCreds)[svc.id]["api_hash"] = apiHash;
+                            (*serviceCreds)[svc.id]["phone"] = phone;
+
+                            if (m_telegramAccountClient) {
+                                m_telegramAccountClient->deleteLater();
+                                m_telegramAccountClient = nullptr;
+                            }
+
+                            QString accountName = m_mainAgentName;
+
+                            if (!m_activeAgentId.isEmpty()) {
+                                const QString selectedName =
+                                    subagentName(m_activeAgentId);
+
+                                if (!selectedName.trimmed().isEmpty())
+                                    accountName = selectedName;
+                            }
+
+                            QString safeAccountName = accountName;
+
+                            safeAccountName.replace(
+                                QRegularExpression("[^A-Za-zА-Яа-яЇїІіЄєҐґ0-9_-]"),
+                                "_");
+
+                            if (safeAccountName.isEmpty())
+                                safeAccountName = "default_agent";
+
+                            const QString sessionsRoot =
+                                QCoreApplication::applicationDirPath()
+                                + "/sessions";
+
+                            const QString sessionDirectory =
+                                sessionsRoot + "/" + safeAccountName;
+
+                            if (!QDir().mkpath(sessionDirectory)) {
+                                QMessageBox::critical(
+                                    this,
+                                    "Telegram",
+                                    "Не вдалося створити папку сесії:\n"
+                                        + sessionDirectory);
+                                return;
+                            }
+
+                            m_telegramAccountClient =
+                                new TelegramAccountClient(this, this);
+
+                            connect(m_telegramAccountClient,
+                                    &TelegramAccountClient::statusChanged,
+                                    this,
+                                    [this](const QString &status) {
+                                        statusBar()->showMessage(status, 10000);
+                                    });
+
+                            connect(m_telegramAccountClient,
+                                    &TelegramAccountClient::authorizationReady,
+                                    this,
+                                    [this, accountName]() {
+                                        QMessageBox::information(
+                                            this,
+                                            "Telegram",
+                                            QString("Акаунт для «%1» успішно підключено.")
+                                                .arg(accountName));
+                                    });
+
+                            connect(m_telegramAccountClient,
+                                    &TelegramAccountClient::authorizationError,
+                                    this,
+                                    [this](const QString &message) {
+                                        QMessageBox::critical(
+                                            this,
+                                            "Помилка Telegram",
+                                            message);
+                                    });
+
+                            m_telegramAccountClient->startAuthorization(
+                                apiId,
+                                apiHash,
+                                phone,
+                                sessionDirectory);
+                        });
+            } else {
+                // TODO: заміни на поля, потрібні саме цьому сервісу
+                addField("login", "Логін / токен");
+                addField("password", "Пароль", true);
+            }
+
+            auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &credsDialog);
+            buttons->button(QDialogButtonBox::Save)->setText("Сохранить");
+            buttons->button(QDialogButtonBox::Cancel)->setText("Отмена");
+            connect(buttons, &QDialogButtonBox::accepted, &credsDialog, &QDialog::accept);
+            connect(buttons, &QDialogButtonBox::rejected, &credsDialog, &QDialog::reject);
+            form->addRow(buttons);
+
+            if (credsDialog.exec() == QDialog::Accepted) {
+                for (auto it = fields.constBegin(); it != fields.constEnd(); ++it)
+                    (*serviceCreds)[svc.id][it.key()] = it.value()->text();
+            }
+        });
+    }
+
+    servicesLayout->addStretch(1);
+
+    pages->addWidget(generalPage);
+    pages->addWidget(servicesPage);
+    for (int i = 0; i < 2; ++i) {
+        connect(switchButtons[i], &QPushButton::clicked, pageSwitch, [=, this]() {
+            const int itemW = (pageSwitch->width() - kSwPad * 2) / 2;
+            slide->stop();
+            slide->setStartValue(highlight->pos());
+            slide->setEndValue(QPoint(kSwPad + i * itemW, kSwPad));
+            slide->start();
+            pages->setCurrentIndex(i);
+        });
     }
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
@@ -2420,12 +2811,8 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
         buttons->addButton(deleteButton, QDialogButtonBox::DestructiveRole);
     }
 
-    layout->addWidget(nameLabel);
-    layout->addWidget(nameEdit);
-    layout->addWidget(roleLabel);
-    layout->addWidget(roleEdit);
-    layout->addWidget(promptLabel);
-    layout->addWidget(promptTabs, 1);
+    layout->addWidget(pageSwitch);
+    layout->addWidget(pages, 1);
     layout->addWidget(buttons);
 
     const int result = dialog.exec();
@@ -2440,8 +2827,15 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
     for (auto it = promptEdits.constBegin(); it != promptEdits.constEnd(); ++it)
         m_agentManager->editFile(backendAgentName, it.value()->toPlainText(), it.key());
 
+    // TODO: тут же збережи вибір сервісів і дані підключення, наприклад:
+    // for (auto it = serviceToggles->constBegin(); it != serviceToggles->constEnd(); ++it)
+    //     if (it.value()->isChecked())
+    //         m_agentManager->connectService(backendAgentName, it.key(), (*serviceCreds)[it.key()]);
+
     return AgentSettingsResult::Saved;
 }
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void MainWindow::openBackgroundPicker()
 {
@@ -2628,6 +3022,93 @@ void MainWindow::openAppSettings()
     emit appTelegramTokenChanged(botToken);
     emit appGeminiTokenChanged(geminiApiKey);
 }
+
+/*void MainWindow::startTelegramAccountAuthorization(
+    const QString &agentName,
+    const QString &apiIdText,
+    const QString &apiHash,
+    const QString &phone)
+{
+    bool ok = false;
+    const qint32 apiId = apiIdText.trimmed().toInt(&ok);
+
+    if (!ok || apiId <= 0) {
+        QMessageBox::warning(
+            this,
+            "Telegram",
+            "API ID має бути числом.");
+        return;
+    }
+
+    if (apiHash.trimmed().isEmpty()) {
+        QMessageBox::warning(
+            this,
+            "Telegram",
+            "API Hash не може бути порожнім.");
+        return;
+    }
+
+    if (phone.trimmed().isEmpty()) {
+        QMessageBox::warning(
+            this,
+            "Telegram",
+            "Номер телефону не може бути порожнім.");
+        return;
+    }
+
+    if (m_telegramAccountClient) {
+        m_telegramAccountClient->deleteLater();
+        m_telegramAccountClient = nullptr;
+    }
+
+    const QString sessionsRoot =
+        QCoreApplication::applicationDirPath() + "/sessions";
+
+    QDir().mkpath(sessionsRoot);
+
+    const QString safeAgentName =
+        agentName.isEmpty() ? "default_agent" : agentName;
+
+    const QString sessionDirectory =
+        sessionsRoot + "/" + safeAgentName;
+
+    m_telegramAccountClient =
+        new TelegramAccountClient(this, this);
+
+    connect(m_telegramAccountClient,
+            &TelegramAccountClient::statusChanged,
+            this,
+            [this](const QString &status) {
+                statusBar()->showMessage(status, 8000);
+            });
+
+    connect(m_telegramAccountClient,
+            &TelegramAccountClient::authorizationReady,
+            this,
+            [this, agentName]() {
+                QMessageBox::information(
+                    this,
+                    "Telegram",
+                    QString("Акаунт «%1» успішно підключено.")
+                        .arg(agentName));
+            });
+
+    connect(m_telegramAccountClient,
+            &TelegramAccountClient::authorizationError,
+            this,
+            [this](const QString &message) {
+                QMessageBox::critical(
+                    this,
+                    "Помилка Telegram",
+                    message);
+            });
+
+    m_telegramAccountClient->startAuthorization(
+        apiId,
+        apiHash,
+        phone,
+        sessionDirectory);
+}*/
 
 void MainWindow::openMainAgentSettings()
 {
@@ -2899,7 +3380,6 @@ void MainWindow::updateTypewriterCursorDisplay()
     }
 }
 
-// ИСПРАВЛЕННАЯ ВЕРСИЯ: hideCodePanel с QVariantAnimation
 void MainWindow::hideCodePanel()
 {
     if (!m_codePanelOpen) return;

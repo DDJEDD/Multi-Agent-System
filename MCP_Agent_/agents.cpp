@@ -13,6 +13,7 @@
 agents::agents(QObject *parent) : QObject(parent) {
     number = new phonenumber(this);
     skillManager = new SkillManager(this);
+    tgAccCl = new TelegramAccountClient(this);
     QSettings settings(QString(APP_SRC_DIR) + "/config.ini", QSettings::IniFormat);
     QString geminiKey = settings.value("gemini_api_key").toString();
     setGeminiKey(geminiKey);
@@ -396,6 +397,22 @@ void agents::executeCall(const QString &id, const QString &callerAgentName, cons
         QString fileToGet = args.value("fileToGet", args.value("file_to_get").toString()).toString().trimmed();
 
         getFile(targetAgent, fileToGet);
+    }
+    else if (functionName == "SendMsgToTgUser"){
+        QJsonObject textObject;
+        textObject["@type"] = "formattedText";
+        textObject["text"] = args.value("text", args.value("text").toString()).toString().trimmed();
+        QJsonObject inputMessageContent;
+        inputMessageContent["@type"] = "inputMessageText";
+        inputMessageContent["text"] = textObject;
+
+        QJsonObject request;
+        request["@type"] = "sendMessage";
+        QString chatIdStr = args.value("fileToGet", args.value("chat_id")).toString().trimmed();
+        request["chat_id"] = chatIdStr.toLongLong();
+        request["input_message_content"] = inputMessageContent;
+        tgAccCl->send(request);
+
     }
 
     else if(functionName == "reqAgent"){

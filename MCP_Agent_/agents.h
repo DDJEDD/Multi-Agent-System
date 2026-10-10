@@ -6,6 +6,7 @@
 #include "jsonparser.h"
 #include "phonenumber.h"
 #include "skillmanager.h"
+#include "telegramaccountclient.h"
 static constexpr int kMaxRetries = 5;
 static constexpr int kRetryBaseDelayMs = 1000;
 
@@ -28,6 +29,7 @@ private:
     QString geminiKey;
     phonenumber *number;
     SkillManager *skillManager;
+    TelegramAccountClient *tgAccCl;
 public:
     explicit agents(QObject *parent = nullptr);
 

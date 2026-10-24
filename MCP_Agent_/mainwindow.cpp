@@ -2945,7 +2945,6 @@ void MainWindow::openThemeCreator(const QString &themeId)
 
     rebuildUiLive();
 }
-
 void MainWindow::openAppSettings()
 {
     QSettings settings(QString(APP_SRC_DIR) + "/config.ini", QSettings::IniFormat);
@@ -2986,15 +2985,15 @@ void MainWindow::openAppSettings()
     tokenEdit->setPlaceholderText("123456789:AAExampleTokenValue");
     tokenEdit->setEchoMode(QLineEdit::Password);
 
-    auto *geminiLabel = new QLabel("Gemini API Key", &dialog);
-    auto *geminiEdit = new QLineEdit(settings.value("gemini_api_key").toString(), &dialog);
-    geminiEdit->setPlaceholderText("AIzaExampleKeyValue");
-    geminiEdit->setEchoMode(QLineEdit::Password);
+    auto *groqLabel = new QLabel("Groq API Key", &dialog);
+    auto *groqEdit = new QLineEdit(settings.value("groq_api_key").toString(), &dialog);
+    groqEdit->setPlaceholderText("gsk_ExampleKeyValue");
+    groqEdit->setEchoMode(QLineEdit::Password);
 
     auto *showCheckbox = new QCheckBox("Показать значения", &dialog);
-    connect(showCheckbox, &QCheckBox::toggled, &dialog, [tokenEdit, geminiEdit](bool checked) {
+    connect(showCheckbox, &QCheckBox::toggled, &dialog, [tokenEdit, groqEdit](bool checked) {
         tokenEdit->setEchoMode(checked ? QLineEdit::Normal : QLineEdit::Password);
-        geminiEdit->setEchoMode(checked ? QLineEdit::Normal : QLineEdit::Password);
+        groqEdit->setEchoMode(checked ? QLineEdit::Normal : QLineEdit::Password);
     });
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
@@ -3005,8 +3004,8 @@ void MainWindow::openAppSettings()
 
     layout->addWidget(tokenLabel);
     layout->addWidget(tokenEdit);
-    layout->addWidget(geminiLabel);
-    layout->addWidget(geminiEdit);
+    layout->addWidget(groqLabel);
+    layout->addWidget(groqEdit);
     layout->addWidget(showCheckbox);
     layout->addWidget(buttons);
 
@@ -3014,15 +3013,15 @@ void MainWindow::openAppSettings()
         return;
 
     const QString botToken = tokenEdit->text().trimmed();
-    const QString geminiApiKey = geminiEdit->text().trimmed();
+    const QString groqApiKey = groqEdit->text().trimmed();
 
     settings.setValue("telegram_token", botToken);
-    settings.setValue("gemini_api_key", geminiApiKey);
+    settings.setValue("groq_api_key", groqApiKey);
+    settings.remove("gemini_api_key"); // убрать старый ключ (по желанию)
 
     emit appTelegramTokenChanged(botToken);
-    emit appGeminiTokenChanged(geminiApiKey);
+    emit appGroqTokenChanged(groqApiKey);
 }
-
 /*void MainWindow::startTelegramAccountAuthorization(
     const QString &agentName,
     const QString &apiIdText,

@@ -28,6 +28,7 @@ public:
 
     void submitCode(const QString &code);
     void submitPassword(const QString &password);
+    void send(const QJsonObject &request);
     void logout();
 
     bool isReady() const;
@@ -43,7 +44,6 @@ private slots:
     void receiveTdlibResponse();
 
 private:
-    void send(const QJsonObject &request);
     void processResponse(const QString &json);
     void processAuthorizationState(const QJsonObject &state);
 

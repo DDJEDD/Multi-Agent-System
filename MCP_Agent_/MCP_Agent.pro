@@ -11,6 +11,7 @@ DEFINES += APP_SRC_DIR=\\\"$$PWD\\\"
 SOURCES += \
     agents.cpp \
     filemanager.cpp \
+    inworldportal.cpp \
     jsonparser.cpp \
     main.cpp \
     mainwindow.cpp \
@@ -23,6 +24,7 @@ SOURCES += \
 HEADERS += \
     agents.h \
     filemanager.h \
+    inworldportal.h \
     jsonparser.h \
     mainwindow.h \
     phonenumber.h \

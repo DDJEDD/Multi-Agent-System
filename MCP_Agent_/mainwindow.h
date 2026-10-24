@@ -297,7 +297,7 @@ signals:
     void subagentRoleChanged(const QString &id, const QString &role);
     void messageSubmitted(const QString &agentId, const QString &backendName, const QString &text);
     void appTelegramTokenChanged(const QString &token);
-    void appGeminiTokenChanged(const QString &key);
+    void appGroqTokenChanged(const QString &token);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;

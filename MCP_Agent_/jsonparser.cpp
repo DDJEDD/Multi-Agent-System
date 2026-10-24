@@ -1,18 +1,15 @@
 #include "jsonparser.h"
 #include <QCoreApplication>
 #include <QJsonArray>
-
 QString JSONParser::sanitizeJsonText(const QString &text)
 {
     QString raw = text.trimmed();
-
 
     if (raw.startsWith("```")) {
         raw.remove(QRegularExpression("^```(?:json)?\\s*"));
         raw.remove(QRegularExpression("\\s*```$"));
         raw = raw.trimmed();
     }
-
 
     int lastBrace = raw.lastIndexOf('}');
     if (lastBrace != -1) {
@@ -23,29 +20,36 @@ QString JSONParser::sanitizeJsonText(const QString &text)
     raw.remove(QRegularExpression(R"("thoughtSignature"\s*:\s*"[^"]*",?)"));
 
     if (raw.isEmpty()) {
-        qWarning() << "После очистки текст от Gemini оказался пустым!";
+        // Заменили лог под Groq
+        qWarning() << "После очистки текст от Groq оказался пустым!";
         return "";
     }
     return raw;
 }
+
 std::optional<QList<AgentCall>> JSONParser::parse(const QJsonObject &response,
                                                   const QMap<QString, QString> &nums,
                                                   const phonenumber &phone)
 {
+    // 1. Изменили парсинг ошибок под стандарт Groq/OpenAI
     if (response.contains("error")) {
-        qWarning() << "Gemini API Error:" << response["error"].toObject()["message"].toString();
+        qWarning() << "Groq API Error:" << response["error"].toObject()["message"].toString();
         return std::nullopt;
     }
 
-    const QJsonArray candidates = response["candidates"].toArray();
-    if (candidates.isEmpty()) return std::nullopt;
+    // 2. Достаем массив choices вместо candidates
+    const QJsonArray choices = response["choices"].toArray();
+    if (choices.isEmpty()) return std::nullopt;
 
-    const QJsonArray parts = candidates[0].toObject()["content"].toObject()["parts"].toArray();
-    if (parts.isEmpty()) return std::nullopt;
+    // 3. Получаем текст из choices[0]["message"]["content"]
+    QJsonObject firstChoice = choices[0].toObject();
+    if (!firstChoice.contains("message")) return std::nullopt;
 
-    const QString rawAiText = sanitizeJsonText(parts[0].toObject()["text"].toString());
+    QJsonObject messageObj = firstChoice["message"].toObject();
+    QString rawAiText = sanitizeJsonText(messageObj["content"].toString());
     if (rawAiText.isEmpty()) return std::nullopt;
 
+    // --- Дальнейшая логика обработки вашего внутреннего JSON остается прежней ---
     QJsonParseError parseError;
     QJsonDocument aiJsonDoc = QJsonDocument::fromJson(rawAiText.toUtf8(), &parseError);
 
@@ -60,11 +64,9 @@ std::optional<QList<AgentCall>> JSONParser::parse(const QJsonObject &response,
 
     QJsonArray stack;
 
-
     if (aiJsonDoc.isArray()) {
         stack = aiJsonDoc.array();
     }
-
     else if (aiJsonDoc.isObject()) {
         const QJsonObject aiJsonObj = aiJsonDoc.object();
         if (aiJsonObj.contains("agent_controls_context")) {
@@ -84,7 +86,6 @@ std::optional<QList<AgentCall>> JSONParser::parse(const QJsonObject &response,
 
     for (const QJsonValue &val : stack) {
         QJsonObject callObj = val.toObject();
-
         QJsonObject argsObj = callObj["args"].toObject();
 
         AgentCall call;
@@ -99,7 +100,6 @@ std::optional<QList<AgentCall>> JSONParser::parse(const QJsonObject &response,
         } else if (callObj.contains("name")) {
             call.functionName = callObj["name"].toString();
         }
-
 
         if (callObj.contains("agentName")) {
             call.agentName = callObj["agentName"].toString();

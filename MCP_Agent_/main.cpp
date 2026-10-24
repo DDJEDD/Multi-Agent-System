@@ -20,8 +20,8 @@ int main(int argc, char *argv[])
     TgBot bot(sharedAgents);
     MainWindow w(sharedAgents);
 
-    QObject::connect(&w, &MainWindow::appGeminiTokenChanged,
-                     sharedAgents, &agents::setGeminiKey);
+    QObject::connect(&w, &MainWindow::appGroqTokenChanged,
+                     sharedAgents, &agents::setGroqKey);
     QObject::connect(&w, &MainWindow::appTelegramTokenChanged,
                      &bot, &TgBot::setToken);
     w.show();

@@ -23,6 +23,7 @@
 #include "agents.h"                // agents, DelayedMessage, MessageSource
 #include "telegramaccountclient.h" // TDLib client for account
 
+// Форвард-декларации для важких UI-класів
 class QVBoxLayout;
 class QHBoxLayout;
 class QScrollArea;
@@ -41,6 +42,7 @@ QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
 QT_END_NAMESPACE
 
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Фон окна: живые цветные «блики», которые просвечивают сквозь стекло
 // ---------------------------------------------------------------------------

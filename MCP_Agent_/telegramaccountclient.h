@@ -1,6 +1,9 @@
 #ifndef TELEGRAMACCOUNTCLIENT_H
 #define TELEGRAMACCOUNTCLIENT_H
 
+#ifndef TELEGRAMACCOUNTCLIENT_H
+#define TELEGRAMACCOUNTCLIENT_H
+
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -8,7 +11,6 @@
 #include <QString>
 #include <QTimer>
 class QWidget;
-
 class TelegramAccountClient : public QObject
 {
     Q_OBJECT
@@ -17,10 +19,13 @@ public:
     explicit TelegramAccountClient(QWidget *dialogParent = nullptr,
                                    QObject *parent = nullptr);
     ~TelegramAccountClient() override;
+    explicit TelegramAccountClient(QWidget *dialogParent = nullptr,
+                                   QObject *parent = nullptr);
+    ~TelegramAccountClient() override;
+
     bool isReady() const;
     QString sessionDirectory() const;
 
-    // Авторизація
     void startAuthorization(qint32 apiId,
                             const QString &apiHash,
                             const QString &phoneNumber,
@@ -28,19 +33,16 @@ public:
     void submitCode(const QString &code);
     void submitPassword(const QString &password);
     void logout();
-    bool startForAgent(const QString &agentName); // зробив
-    // Чати і повідомлення
-    void requestChats(int limit = 100); // зробив
+    bool startForAgent(const QString &agentName);
+    void requestChats(int limit = 100);
     void requestMessages(qint64 chatId, qint64 fromMessageId = 0, int limit = 50);
-    void sendMessage(qint64 chatId, const QString &text); // зробив
+    void sendMessage(qint64 chatId, const QString &text);
     void sendHistoryRequest(qint64 chatId, qint64 fromMessageId, int limit, int attempt);
     static QString messagePreview(const QJsonObject &message);
     bool isStarted() const { return m_started; }
-    // Профіль
     void requestProfile();
     void setName(const QString &firstName, const QString &lastName);
     void setUsername(const QString &username);
-
 
 signals:
     void statusChanged(const QString &status);
@@ -106,7 +108,6 @@ private:
     bool m_phoneNumberSent = false;
     bool m_codeDialogOpened = false;
     bool m_passwordDialogOpened = false;
-
     qint64 m_nextExtra = 1;
     QHash<QString, PendingRequest> m_pending;
     QHash<qint64, QJsonObject> m_chats;

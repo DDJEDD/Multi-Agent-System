@@ -26,6 +26,10 @@ int main(int argc, char *argv[])
                      sharedAgents, &agents::setAiModel);
     QObject::connect(&w, &MainWindow::appAiKeyChanged,
                      sharedAgents, &agents::setAiToken);
+
+    QObject::connect(&w, &MainWindow::appTelegramTokenChanged,
+                     &bot, &TgBot::setToken);
+    w.show();
     QObject::connect(&w, &MainWindow::appTelegramTokenChanged,
                      &bot, &TgBot::setToken);
     w.show();

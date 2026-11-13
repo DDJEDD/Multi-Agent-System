@@ -1,5 +1,7 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
+#include "mainwindow.h"
+#include "ui_mainwindow.h"
 #include "liquidglass.h"
 #include <QComboBox>
 #include <QButtonGroup>
@@ -57,7 +59,14 @@
 #include <QPointer>
 #include <cmath>
 #include <utility>
+#include <QPointer>
+#include <cmath>
+#include <utility>
 #include <functional>
+#include <QResizeEvent>
+#include <QFormLayout>
+#include <QSharedPointer>
+#include "telegramaccountclient.h" // можно включить, но header уже подключён в mainwindow.h
 
 #include "telegramaccountclient.h"
 
@@ -106,11 +115,11 @@ struct ThemeFamily { QString id; QString label; QString lightId; QString darkId;
 QList<ThemeFamily> themeFamilies()
 {
     return {
-            {"neutral", "Обычная", "light", "dark"},
-            {"pink",    "Pink",    "pink",  "pinkdark"},
-            {"nord",    "Nord",    "nordlight", "nord"},
-            {"sunset",  "Sunset",  "sunsetlight", "sunset"},
-            };
+             {"neutral", "Обычная", "light", "dark"},
+             {"pink",    "Pink",    "pink",  "pinkdark"},
+             {"nord",    "Nord",    "nordlight", "nord"},
+             {"sunset",  "Sunset",  "sunsetlight", "sunset"},
+             };
 }
 
 QString themeDisplayName(const QString &themeId)
@@ -461,12 +470,12 @@ void AnimatedBackdrop::paintStarfall(QPainter &painter)
 {
     struct Meteor { qreal startX, startY, angle, trailLen, speed, offset; QString color; };
     static const QList<Meteor> meteors = {
-                                          {0.10, -0.05, 32.0, 0.20, 0.55, 0.00, kAccent},
-                                          {0.42, -0.08, 28.0, 0.16, 0.42, 0.40, kAccent2},
-                                          {0.68, -0.04, 36.0, 0.22, 0.65, 0.70, kAccent},
-                                          {0.25, -0.10, 30.0, 0.14, 0.38, 0.20, kAccentGreen},
-                                          {0.85, -0.06, 34.0, 0.24, 0.50, 0.85, kAccent2},
-                                          };
+                                           {0.10, -0.05, 32.0, 0.20, 0.55, 0.00, kAccent},
+                                           {0.42, -0.08, 28.0, 0.16, 0.42, 0.40, kAccent2},
+                                           {0.68, -0.04, 36.0, 0.22, 0.65, 0.70, kAccent},
+                                           {0.25, -0.10, 30.0, 0.14, 0.38, 0.20, kAccentGreen},
+                                           {0.85, -0.06, 34.0, 0.24, 0.50, 0.85, kAccent2},
+                                           };
 
     const qreal w = width();
     const qreal h = height();
@@ -580,13 +589,13 @@ void NetworkBackdrop::paintStarfall(QPainter &painter)
 {
     struct Meteor { qreal startX, startY, angle, trailLen, speed, offset; QString color; };
     static const QList<Meteor> meteors = {
-                                          {0.05, -0.06, 32.0, 0.22, 0.50, 0.00, kAccent},
-                                          {0.30, -0.10, 28.0, 0.18, 0.40, 0.35, kAccent2},
-                                          {0.55, -0.05, 34.0, 0.24, 0.58, 0.65, kAccent},
-                                          {0.78, -0.08, 30.0, 0.16, 0.36, 0.15, kAccentGreen},
-                                          {0.92, -0.06, 36.0, 0.20, 0.46, 0.85, kAccent2},
-                                          {0.18, -0.12, 26.0, 0.14, 0.32, 0.55, kAccent},
-                                          };
+                                           {0.05, -0.06, 32.0, 0.22, 0.50, 0.00, kAccent},
+                                           {0.30, -0.10, 28.0, 0.18, 0.40, 0.35, kAccent2},
+                                           {0.55, -0.05, 34.0, 0.24, 0.58, 0.65, kAccent},
+                                           {0.78, -0.08, 30.0, 0.16, 0.36, 0.15, kAccentGreen},
+                                           {0.92, -0.06, 36.0, 0.20, 0.46, 0.85, kAccent2},
+                                           {0.18, -0.12, 26.0, 0.14, 0.32, 0.55, kAccent},
+                                           };
 
     const qreal w = width();
     const qreal h = height();
@@ -628,7 +637,10 @@ void NetworkBackdrop::paintStarfall(QPainter &painter)
 // Сетка узлов больше не используется в интерфейсе; метод оставлен, чтобы не менять заголовок.
 void NetworkBackdrop::paintNodes(QPainter &painter)
 {
+void NetworkBackdrop::paintNodes(QPainter &painter)
+{
     Q_UNUSED(painter);
+}
 }
 
 // ===========================================================================
@@ -2836,10 +2848,8 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
     layout->setContentsMargins(20, 14, 20, 16);
     layout->setSpacing(8);
 
-    // Переключатель страниц General / Services — сегмент-контрол как в iOS
     constexpr int kSwH = 36, kSwPad = 3;
     constexpr int kItemH = kSwH - kSwPad * 2;
-
     struct SwitchBar : QWidget {
         std::function<void()> onResize;
         using QWidget::QWidget;
@@ -2871,7 +2881,6 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
                                   .arg(Glass::css(gt.tint), Glass::css(gt.stroke),
                                        Glass::css(gt.tintStrong),
                                        kTextMuted, kTextMain));
-
     auto *highlight = new QFrame(pageSwitch);
     highlight->setObjectName("cyberHighlight");
     highlight->setAttribute(Qt::WA_TransparentForMouseEvents, true);
@@ -2924,9 +2933,9 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
     auto *promptTabs = new QTabWidget(&dialog);
 
     static const QList<QPair<QString, QString>> promptParts = {
-                                                               {"soul", "Soul"},
-                                                               {"system_prompt", "System Prompt"},
-                                                               };
+                                                                {"soul", "Soul"},
+                                                                {"system_prompt", "System Prompt"},
+                                                                };
 
     QMap<QString, QTextEdit *> promptEdits;
     for (const auto &part : promptParts) {
@@ -2951,14 +2960,14 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
 
     struct ServiceDef { QString id; QString name; };
     static const QList<ServiceDef> kServices = {
+    struct ServiceDef { QString id; QString name; };
+    static const QList<ServiceDef> kServices = {
                                                 {"instagram", "Instagram"},
                                                 {"telegram",  "Telegram"},
                                                 {"whatsapp",  "WhatsApp"},
                                                 {"discord",   "Discord"},
                                                 };
 
-    // service id -> (поле -> значение). Заполняется через диалог "...".
-    // TODO: подгружать/сохранять через m_agentManager вместо локальной мапы.
     auto serviceCreds = QSharedPointer<QMap<QString, QMap<QString, QString>>>::create();
     auto serviceToggles = QSharedPointer<QMap<QString, ToggleSwitch *>>::create();
 
@@ -2980,7 +2989,6 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
 
         auto *toggle = new ToggleSwitch(row);
         serviceToggles->insert(svc.id, toggle);
-
         auto *dotsButton = new QPushButton(QString::fromUtf8("\xE2\x8B\xAF"), row); // ⋯
         dotsButton->setStyleSheet(dotsStyle);
         dotsButton->setCursor(Qt::PointingHandCursor);
@@ -3402,6 +3410,7 @@ void MainWindow::openAppSettings()
         tokenEdit->setEchoMode(mode);
         orKeyEdit->setEchoMode(mode);
     });
+    });
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
     buttons->button(QDialogButtonBox::Save)->setText("Сохранить");
@@ -3429,7 +3438,6 @@ void MainWindow::openAppSettings()
     settings.setValue("openrouter_api_key", aiKey);
     if (!aiModel.isEmpty())
         settings.setValue("ai_model", aiModel);
-    // старые ключи больше не нужны
     settings.remove("cf_account_id");
     settings.remove("cf_api_token");
     settings.remove("groq_api_key");
@@ -3439,7 +3447,6 @@ void MainWindow::openAppSettings()
     emit appAiKeyChanged(aiKey);
     if (!aiModel.isEmpty())
         emit appAiModelChanged(aiModel);
-}
 void MainWindow::openMainAgentSettings()
 {
     const QString oldBackendName = m_agentFolderNames.value(QString(), m_mainAgentName);

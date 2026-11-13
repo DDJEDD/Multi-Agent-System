@@ -32,6 +32,7 @@ QString JSONParser::sanitizeJsonText(const QString &text)
     }
     return raw;
 }
+
 std::optional<QList<AgentCall>> JSONParser::parse(const QJsonObject &response,
                                                   const MaskTable &table,
                                                   const phonenumber &phone,
@@ -40,6 +41,8 @@ std::optional<QList<AgentCall>> JSONParser::parse(const QJsonObject &response,
     auto fail = [&](const QString &msg) -> std::optional<QList<AgentCall>> {
         qWarning() << msg;
         if (errorOut) *errorOut = msg;
+        return std::nullopt;
+    };
         return std::nullopt;
     };
 
@@ -75,6 +78,7 @@ std::optional<QList<AgentCall>> JSONParser::parse(const QJsonObject &response,
                         ? "Модель упёрлась в лимит токенов и не вернула ответ. Увеличь max_tokens или выбери модель без длинных рассуждений."
                         : "Модель вернула пустой ответ");
 
+    // --- Дальнейшая логика обработки вашего внутреннего JSON остается прежней ---
     QJsonParseError parseError;
     QJsonDocument aiJsonDoc = QJsonDocument::fromJson(rawAiText.toUtf8(), &parseError);
 
@@ -130,6 +134,9 @@ std::optional<QList<AgentCall>> JSONParser::parse(const QJsonObject &response,
             call.functionName = callObj["name"].toString();
 
         if (callObj.contains("agentName"))
+            call.agentName = callObj["agentName"].toString();
+        else if (callObj.contains("agent_name"))
+            call.agentName = callObj["agent_name"].toString();
             call.agentName = callObj["agentName"].toString();
         else if (callObj.contains("agent_name"))
             call.agentName = callObj["agent_name"].toString();

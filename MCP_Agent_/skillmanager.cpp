@@ -8,6 +8,7 @@
 
 SkillManager::SkillManager(QObject *parent, QString plugins) : QObject(parent) {
     plugins_path = plugins.isEmpty() ? "/PLUGINS" : plugins;
+    loadAllPluginManifests();
 }
 void SkillManager::loadAllPluginManifests() {
     functionToPluginMap.clear();
@@ -60,6 +61,13 @@ QStringList SkillManager::listPlugins() const {
 QString SkillManager::getSkilsFile(QString plugin_name) const {
     QDir pluginRoot(QCoreApplication::applicationDirPath() + plugins_path + "/" + plugin_name);
     return FileManager::getFile("SKILL", pluginRoot);
+bool SkillManager::hasFunction(const QString &functionName) const {
+    return functionToPluginMap.contains(functionName);
+}
+
+QString SkillManager::getPluginForFunction(const QString &functionName) const {
+    return functionToPluginMap.value(functionName, QString());
+}
 }
 
 bool SkillManager::hasFunction(const QString &functionName) const {

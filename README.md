@@ -1,175 +1,140 @@
 <div align="center">
 
-# 🧠 Agent Console
+# 🧠 Agents Orchestrator
 
-### A self-organizing, Gemini-powered multi-agent orchestrator with a Telegram bot and a native Qt desktop client
+**A native Qt 6 desktop runtime for multi-agent LLM systems**
+with sandboxed tool-calling, a plugin protocol, PII masking, and first-class Telegram integration.
 
-![C++](https://img.shields.io/badge/C%2B%2B-17-00599C?style=flat-square&logo=cplusplus)
-![Qt](https://img.shields.io/badge/Qt-6.10-41CD52?style=flat-square&logo=qt)
-![Gemini](https://img.shields.io/badge/LLM-Gemini%203.6%20Flash-8E75B2?style=flat-square)
-![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey?style=flat-square)
-![License](https://img.shields.io/badge/License-Unlicensed-lightgrey?style=flat-square)
+![C++](https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white)
+![Qt](https://img.shields.io/badge/Qt-6-41CD52?logo=qt&logoColor=white)
+![LLM](https://img.shields.io/badge/LLM-OpenRouter-6467F2)
+![Telegram](https://img.shields.io/badge/Telegram-Bot%20API%20%2B%20TDLib-26A5E4?logo=telegram&logoColor=white)
+![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
+
+[Overview](#-overview) · [Architecture](#-architecture) · [Tool protocol](#-tool-calling-protocol) · [Security](#-security-model) · [Plugins](#-plugin-system) · [Getting started](#-getting-started) · [Configuration](#-configuration-reference) · [Roadmap](#-known-limitations--roadmap)
+
+<!-- Add a screenshot or GIF of the UI here:
+<img src="docs/screenshot.png" width="860" alt="Agents Orchestrator UI">
+-->
 
 </div>
 
 ---
 
-A single **Orchestrator** agent (Главный агент / *"Main Agent"*) talks to the user, and can dynamically **create, rename, edit, and delete** its own specialized **sub‑agents** — each with its own persona and prompt files — delegating tasks to them at will. Every decision the system makes is driven by a single Gemini call per turn, which returns a strict JSON **function‑call stack** that the app parses and executes.
+## ✨ Overview
 
-The same backend powers two very different front ends:
+Agents Orchestrator lets you run a **team of LLM agents** from a single desktop app. One **orchestrator** agent manages any number of **sub-agents**: it creates them, rewrites their prompts, delegates work, and talks to the outside world through a controlled set of tools. Every agent can be reached from the built-in GUI, a Telegram bot, or a real Telegram user account.
+
+It is written in modern C++20 on top of Qt 6, talks to any model on [OpenRouter](https://openrouter.ai), and deliberately keeps the trust boundary in **code, not in the prompt**: roles, permissions, network access and command execution are enforced by the host application regardless of what the model says.
+
+### Highlights
 
 | | |
 |---|---|
-| 💬 **TgBot** | A Telegram bot — long-polls `getUpdates`, sends text, photos, and stickers back to the chat. |
-| 🖥️ **Agent Console** | A native Qt desktop chat client — sidebar agent roster, live status, themeable UI, and a typewriter-style code panel. |
-
----
-
-## Table of Contents
-
-- [How it works](#-how-it-works)
-- [Architecture](#-architecture)
-- [Agents on disk](#-agents-on-disk)
-- [Roles & permissions](#-roles--permissions)
-- [Function-calling protocol](#-function-calling-protocol)
-- [JSON response sanitization](#-json-response-sanitization)
-- [Reliability: retries & number masking](#-reliability-retries--number-masking)
-- [Desktop UI tour](#-desktop-ui-tour)
-- [Theming](#-theming)
-- [Requirements](#-requirements)
-- [Setup & Build](#-setup--build)
-- [Usage](#-usage)
-- [Project layout](#-project-layout)
-
----
-
-## 🔄 How it works
-
-```
-User message  ──▶  agents::reqAgent()
-                       │
-                       ├─ builds full context:
-                       │    soul + min_info + system_prompt + stickers
-                       │    + conversation history
-                       │    + list of available sub-agents
-                       │
-                       ▼
-                 Gemini generateContent
-                       │
-                       ▼
-        ┌───────────────────────────────┐
-        │  strict JSON response:         │
-        │  { "function_call_stack": [...] }
-        └───────────────┬───────────────┘
-                         ▼
-                   JSONParser::parse
-              (sanitize → extract → validate)
-                         ▼
-                 QList<AgentCall>
-                         ▼
-               agents::executeCall()  ──▶  for each call:
-                                             • send messages/stickers/photos
-                                             • createAgent / deleteAgent
-                                             • changeAgentName
-                                             • editFile / getFile
-                                             • reqAgent → delegate to sub-agent
-```
-
-1. Incoming text (from Telegram **or** the desktop UI) is forwarded to `agents::reqAgent()`.
-2. A single prompt is assembled from the target agent's `soul`, `min_info`, `system_prompt`, and `stickers` files, plus recent conversation history and a system note listing every currently available sub-agent.
-3. The request is sent to `gemini-3.6-flash` with `responseMimeType: application/json`, so the model is constrained to return JSON.
-4. `JSONParser` cleans up the raw text and parses it into an ordered list of `AgentCall` structs.
-5. `agents::executeCall()` walks the list and dispatches each call — enforcing role permissions along the way.
-6. Replies (text, delayed multi-part messages, stickers, photos, code blocks) are routed back to whichever front end started the request, tagged by a `MessageSource` (`Telegram` or `UI`) that flows through the entire call chain — including nested `reqAgent` delegations.
-7. The desktop UI additionally receives fine-grained `requestThinkingContext` events at every step of execution (function dispatched, agent created, file edited, …), rendered as a pulsing **"🧠 thinking…"** chip above the composer.
+| 🤝 **Orchestrator / sub-agent model** | Hierarchical agents with role-based permissions. Sub-agents can only escalate to the orchestrator. |
+| 🔧 **Structured tool calling** | Model replies are parsed into a typed call stack, executed, and fed back as results in a bounded loop. |
+| 🔌 **Language-agnostic plugins** | Any executable that speaks one line of JSON on stdin/stdout becomes a tool. Per-plugin timeouts, settings and data directories. |
+| 🛡️ **Defense in depth** | SSRF guard, command allow-list, path-traversal checks, prompt-injection fencing, user allow-list for Telegram. |
+| 🕶️ **PII masking** | Phone numbers and long numeric IDs are replaced with stable placeholders before they leave the machine, and restored in the model's reply. |
+| 💬 **Two Telegram integrations** | Bot API (long polling, vision input) and per-agent user accounts via TDLib. |
+| ♻️ **Resilient networking** | Exponential back-off on `408 / 429 / 5xx`, explicit surfacing of auth and billing errors, truncated-output detection. |
+| 🎨 **Polished UI** | "Liquid glass" theming, 8 built-in themes + custom palettes, animated backdrops, typewriter rendering, collapsible code blocks. |
 
 ---
 
 ## 🏗 Architecture
 
-```
-                         ┌───────────────────┐
-                         │       agents        │   agent lifecycle,
-                         │  (agents.h/.cpp)     │   prompt assembly,
-                         └─────────┬───────────┘   function dispatch
-             ┌─────────────────────┼─────────────────────┐
-             │                     │                     │
-     ┌───────▼────────┐   ┌────────▼────────┐   ┌────────▼─────────┐
-     │    JSONParser    │   │   FileManager    │   │   phonenumber     │
-     │  sanitize/parse   │   │  agent files &    │   │  mask/restore      │
-     │  Gemini's reply    │   │  chat history      │   │  phone numbers      │
-     └────────────────┘   └─────────────────┘   └───────────────────┘
-             ▲
-             │  MessageSource::UI / MessageSource::Telegram
-             │
-    ┌────────┴─────────┐              ┌────────────────────┐
-    │      TgBot          │              │     MainWindow       │
-    │  (Telegram polling,  │              │  (Qt desktop chat,    │
-    │  send msg/photo/sticker)│           │  agent roster, themes, │
-    └──────────────────┘              │  live code panel)     │
-                                       └────────────────────┘
+```mermaid
+flowchart LR
+    subgraph Channels
+        GUI["Qt GUI"]
+        BOT["Telegram Bot API"]
+        ACC["Telegram accounts<br/>TDLib"]
+    end
+
+    subgraph Core["Orchestration core"]
+        AG["agents<br/>request pipeline"]
+        MASK["PII masking"]
+        PARSE["JSONParser"]
+        DISP["Tool dispatcher<br/>role checks"]
+    end
+
+    LLM(["OpenRouter<br/>any chat model"])
+
+    subgraph Tools
+        BUILTIN["Agent management<br/>getFile / editFile / reqAgent"]
+        PLUG["Plugins<br/>JSON over stdio"]
+        NET["reqSite<br/>SSRF-guarded HTTPS"]
+        CMD["reqCMD<br/>allow-listed"]
+        TG["Telegram tools<br/>history / list / send"]
+    end
+
+    FS[("Agents/ · sessions/<br/>PluginData/ · chat .jsonl")]
+
+    GUI --> AG
+    BOT --> AG
+    ACC --> AG
+    AG --> MASK --> LLM
+    LLM --> PARSE --> DISP
+    DISP --> BUILTIN & PLUG & NET & CMD & TG
+    BUILTIN & PLUG & NET & CMD & TG -- "tool result" --> AG
+    DISP -- "messages[]" --> Channels
+    AG <--> FS
 ```
 
-- **`agents`** — the brain: builds Gemini requests, retries on transient failure, parses results, and enforces the permission model when dispatching function calls.
-- **`JSONParser`** — a defensive parser built to survive an LLM's occasional sloppiness (see [JSON sanitization](#-json-response-sanitization) below).
-- **`FileManager`** — thin wrapper around agent folders and per-chat history files on disk.
-- **`phonenumber`** — strips phone numbers out of user text before it ever reaches the LLM, and re-inserts them into outgoing messages.
-- **`MainWindow`** — the desktop client: everything from chat bubbles to the theme editor lives here.
+### Request lifecycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant A as agents
+    participant M as Masker
+    participant L as OpenRouter
+    participant P as JSONParser
+    participant T as Tool
+
+    U->>A: message (GUI / Telegram)
+    A->>A: build system prompt<br/>soul + min_info + system_prompt + roster + history
+    A->>M: mask phone numbers and long IDs
+    M-->>A: text with [ID_n] placeholders
+    A->>L: chat/completions (json_object)
+    L-->>A: function_call_stack
+    A->>P: parse and sanitize
+    P-->>A: list of AgentCall (placeholders restored)
+    loop for each call
+        A->>A: enforce role from agent name, not from model output
+        A->>T: execute
+        T-->>A: result (fenced as data, truncated)
+        A->>L: continue chain, depth-limited
+    end
+    A-->>U: messages with optional delay, sticker, photo, code
+```
+
+**Key mechanics**
+
+1. **Prompt assembly.** The system prompt is the concatenation of the agent's `soul`, `min_info` and `system_prompt` files, a live roster of sub-agents and plugins, and the tail of the conversation (≤ 4 KB, each field clipped to 400 chars).
+2. **Tolerant parsing.** The parser strips Markdown fences, trailing garbage and provider-specific noise, and falls back to a brace-matching scanner that extracts the first JSON object that actually looks like a call stack.
+3. **Bounded tool loop.** Tool results are fed back to the model in a loop capped by `kMaxToolDepth`; each result is truncated to `kMaxToolResultChars` and prefixed with a notice that it is *data, not instructions*.
+4. **Retry policy.** `408`, `429`, `500`, `502`, `503`, `504`, `rate_limit_exceeded` and overload errors retry with exponential back-off (`kRetryBaseDelayMs · 2ⁿ`, up to `kMaxRetries`) **without resetting the chain-depth counter**. `401` and `402` are never retried and are reported to the user immediately (`AI_AUTH_ERROR`, `AI_NO_CREDITS`).
+5. **Truncation awareness.** `finish_reason == "length"` is detected, and the resulting error message tells the user to raise `max_tokens` instead of reporting a generic parse failure.
 
 ---
 
-## 📁 Agents on disk
+## 🔧 Tool-calling protocol
 
-Every agent — Orchestrator included — is just a folder:
-
-```
-<app-dir>/Agents/<agentName>/
-├── system_prompt.md   # behavioral rules / instructions
-├── soul.md             # personality / voice
-├── min_info.md          # display name + short role note (parsed by the UI)
-└── stickers.md           # optional: sticker ID reference sheet
-```
-
-| Function | What it does |
-|---|---|
-| `createAgent(name, purpose)` | Creates the folder and seeds `system_prompt`, `soul`, and `min_info`. |
-| `getFullPrompt(name)` | Concatenates `soul + min_info + system_prompt + stickers` into the LLM context, skipping any empty files. |
-| `editFile` / `getFile` | Lets the Orchestrator (or the desktop UI's settings dialog) read/write any prompt file at runtime. |
-| `changeAgentName` | Renames the agent's folder on disk (refuses if the target name already exists). |
-| `deleteAgent` | Removes the agent's folder entirely. |
-| `listAgents()` | Enumerates every subfolder of `Agents/` — this is how both the LLM and the UI discover which sub-agents currently exist. |
-
-`min_info` stores the agent's display name on its first line (`Имя агента: …`) with the free-text role note below it — the UI parses and rebuilds this file (`extractRoleFromMinInfo` / `buildMinInfo`) so the name and role can be edited independently.
-
----
-
-## 🔐 Roles & permissions
-
-| Role | Send messages/photos/stickers to the user | Manage agents (create/delete/rename/edit files) | Call `reqAgent` |
-|---|:---:|:---:|:---:|
-| **Orchestrator** | ✅ | ✅ | ✅ — to *any* sub-agent |
-| **Sub-agent** | ❌ | ❌ | ✅ — *only* back to the Orchestrator |
-
-This is enforced in code, not just prompted for: `executeCall()` checks `role == Constants::RoleOrchestrator` before honoring privileged calls, and a sub-agent attempting to call another sub-agent is rejected with a logged security warning.
-
----
-
-## 🧩 Function-calling protocol
-
-The model is instructed to respond with **only** a JSON object shaped like this:
+The model must answer with a single JSON object:
 
 ```json
 {
   "function_call_stack": [
     {
-      "id": "call-1",
-      "role": "orchestrator",
-      "agentName": "Главный агент",
-      "name": "messages",
+      "id": "1",
+      "functionName": "respond",
       "args": {
         "messages": [
-          { "text": "Hello! 👋", "delay": 0 },
-          { "text": "One moment…", "delay": 1200, "code": "print('hi')" }
+          { "text": "Done. Here's the script:", "delay": 0 },
+          { "text": "", "code": "print('hello')" }
         ]
       }
     }
@@ -177,172 +142,275 @@ The model is instructed to respond with **only** a JSON object shaped like this:
 }
 ```
 
-Two envelope shapes are accepted, so the parser is tolerant of minor prompt-format drift:
+> [!NOTE]
+> `agentName` and `role` fields in the model's output are **ignored**. The host derives the caller's identity and role itself (`Constants::kMainAgentName` ⇒ orchestrator, everything else ⇒ sub-agent), so a model can't promote itself by claiming a different role.
 
-- a bare `{ "function_call_stack": [...] }` object,
-- or `{ "agent_controls_context": { "function_call_stack": [...] } }`,
-- or a raw top-level array `[...]`.
+A `messages[]` entry supports `text`, `delay`, `stickerId`, `photoUrl` and `code`. Messages are dispatched to the originating channel (GUI or Telegram) and persisted to the conversation history.
 
-| Function | Purpose | Restricted to |
-|---|---|---|
-| `messages` | Send one or more delayed messages, each with optional `stickerId`, `photoUrl`, and `code` (rendered as a collapsible code block / streamed into the code panel). | any role |
-| `createAgent` | Create a new sub-agent with a given purpose. | Orchestrator |
-| `deleteAgent` | Delete an existing agent. | Orchestrator |
-| `changeAgentName` | Rename an agent. | Orchestrator |
-| `editFile` | Overwrite one of an agent's prompt files. | Orchestrator |
-| `getFile` | Read one of an agent's prompt files. | Orchestrator |
-| `reqAgent` | Delegate a task to another agent (with an optional base64 photo payload). | any role, but scoped as per the permission table above |
+### Built-in tools
 
-Each `messages` entry's `delay` is clamped to `0–5000` ms before being scheduled, so a malformed or hallucinated value can never stall the UI.
+| Tool | Orchestrator | Sub-agent | Arguments |
+|---|:-:|:-:|---|
+| `respond` | ✅ | ✅ | `messages[]` |
+| `createAgent` | ✅ | ❌ | `agentName`, `purpose` |
+| `deleteAgent` | ✅ | ❌ | `agentName` (the main agent is protected) |
+| `changeAgentName` | ✅ | ❌ | `oldName`, `newName` |
+| `editFile` | ✅ | ❌ | `agentName`, `fileToEdit` ∈ `soul \| min_info \| system_prompt`, `content` |
+| `getFile` | ✅ | ❌ | `agentName`, `fileToGet` |
+| `reqAgent` | ✅ any agent | ⚠️ orchestrator only | `agentName`, `prompt`, `chatId`¹, `photoB64` |
+| `reqCMD` | ✅ | ❌ | `program`, `cmdArgs[]` |
+| `reqSite` | ✅ | ✅ | `host`, `path`, `method` ∈ `GET \| POST`, `body`, `headers` |
+| `getPluginSkill` | ✅ | ✅ | `pluginName` |
+| `GetChatTgList` | ✅ | ✅ | `limit` |
+| `GetChatTgHistory` | ✅ | ✅ | `chatId`, `limit` |
+| `SendMsgToTgUser` | ✅ | ✅ | `chatId`, `text` |
+| *plugin functions* | ✅ | ✅ | defined by each plugin's manifest |
 
----
+<sub>¹ Only honored when the caller is the orchestrator; sub-agents always stay in their own chat.</sub>
 
-## 🧼 JSON response sanitization
-
-LLMs don't always produce perfectly clean JSON, so `JSONParser::sanitizeJsonText()` runs a small pipeline before parsing:
-
-1. **Strip Markdown code fences** — a leading ` ```json ` / ` ``` ` and trailing ` ``` ` are removed if present.
-2. **Trim trailing garbage** — anything after the last `}` is discarded.
-3. **Drop `thoughtSignature` fields** — an internal Gemini artifact that would otherwise break parsing.
-4. **Fallback brace-matching** — if `QJsonDocument::fromJson` still fails (e.g. `GarbageAtEnd`), `extractFirstJsonObject()` walks the text character-by-character (respecting string/escape boundaries) to find the first balanced `{ … }` block and re-parses just that.
-
-Only after all of this does the parser walk the resulting `function_call_stack`, normalizing several historically-inconsistent key names along the way (`functionName`/`name`, `agentName`/`agent_name`, `agent_name` nested inside `args`, etc.) — so a slightly-off model response still produces a usable `AgentCall`.
+Argument names are accepted in both `camelCase` and `snake_case` (`agentName` / `agent_name`) to tolerate model drift.
 
 ---
 
-## 🔁 Reliability: retries & number masking
+## 🛡 Security model
 
-- **Automatic retry with backoff** — Gemini errors `429`, `500`, and `503` are retried up to `kMaxRetries` times, with delay `kRetryBaseDelayMs * 2^retryCount` between attempts. Non-retryable errors (or exhausted retries) surface as a `requestError` signal instead of failing silently.
-- **Phone number masking** — before any user text reaches Gemini, `phonenumber::HideNumbers()` replaces phone numbers with placeholders; the returned map of placeholders → real numbers (`nums`) is threaded through the whole response pipeline so `JSONParser::parse()` can restore the real numbers into outgoing message text via `phone.restoreNumbers()`.
+LLM agents with tools are an attack surface. The guiding rule here is **never trust model output for authorization**.
 
----
-
-## 🖥️ Desktop UI tour
-
-<div align="center">
-
-**Sidebar** · **Chat** · **Live Code Panel** · **Settings**
-
-</div>
-
-- **🧑‍🤝‍🧑 Agent roster (sidebar)**
-  - A pinned status card for the Orchestrator: avatar, live online/offline dot, editable name, role preview, and app uptime.
-  - Below it, one card per sub-agent: generated initials-avatar, colored status dot (`Idle` / `Active` / `Busy` / `Error`), inline-editable name, enable/disable toggle switch, and a gear button for full settings.
-  - `+` creates a brand-new sub-agent on the spot; `⟳` re-scans `Agents/` on disk to pick up anything the Orchestrator created or removed itself; `◂` collapses the whole sidebar down to icons with a smooth width animation.
-
-- **💬 Chat area**
-  - Per-agent conversation history, rendered as gradient-accented bubbles for the user and neutral bubbles for the agent, each with a fade-in entrance animation.
-  - Long code snippets collapse into a `▸ Код` header you can expand/collapse and copy with one click.
-  - A pulsing **"🧠 thinking…"** chip appears above the composer while a request is in flight, showing the latest live progress message, and auto-fades out a few seconds after the agent goes quiet.
-
-- **⚡ Live code panel**
-  - A slide-out panel on the right that "types" incoming code character-by-character in small randomized chunks, with a blinking text cursor — purely cosmetic, but makes long generations feel alive rather than dumped all at once.
-  - One click copies the full snippet to the clipboard; another closes the panel with a matching slide animation.
-
-- **⚙️ Agent settings dialog**
-  - Edit an agent's display name and short role note.
-  - Tabbed editors for its `soul` and `system_prompt` files.
-  - Sub-agents get a destructive **"Delete agent"** button with a confirmation prompt; the Orchestrator does not.
-
----
-
-## 🎨 Theming
-
-Everything is driven by a small palette system (`ThemePalette`) computed from a handful of *key* colors — background, panel, card, border, text, two accents, success, and danger — with hover states, muted text tones, and status colors derived automatically based on whether the base color is light or dark.
-
-**Built-in theme families**, each with a light and dark variant:
-
-| Family | Light | Dark |
-|---|---|---|
-| Neutral | Daylight | Midnight |
-| Pink | Sakura | Yozakura |
-| Nord | Nord Light | Nord |
-| Sunset | Sunrise | Sunset |
-
-Every family can be fine-tuned or forked into a fully **custom theme** via an in-app color picker (`openThemeCreator`), which writes overrides straight into `config.ini`.
-
-**Backdrop styles** — chosen independently of the color theme, and live-animated at ~7.7 FPS:
-
-| Mode | Description |
+| Threat | Mitigation |
 |---|---|
-| `gradient` | Softly drifting radial color blobs |
-| `aurora` | A slow-rotating diagonal aurora-style gradient sweep |
-| `particles` | Twinkling ambient dots along the window edges |
-| `starfall` | Streaking meteor trails with fading tails |
-| *custom image/GIF* | Your own picture or animated GIF, cover-fit and centered |
-| `none` | Flat background, animation disabled |
+| **Privilege escalation via model output** | Role is computed from the agent's name by the host; role/name fields in the response are discarded. |
+| **Arbitrary command execution** | `reqCMD` is orchestrator-only, accepts a bare program name (no `/` or `\`), checks it against `cmd_allowlist` (default: `ls echo pwd whoami date hostname`), and enforces a timeout. |
+| **SSRF through `reqSite`** | Hosts are rejected if they are `localhost`, `*.local`, `*.internal`, contain `/ @` or spaces, or resolve as IP literals in loopback, link-local, multicast, ULA, `0/8`, `10/8`, `100.64/10`, `127/8`, `169.254/16`, `172.16/12` or `192.168/16`. Only `GET`/`POST` over HTTPS. |
+| **Prompt injection via tool output or Telegram text** | Tool results and inbound messages are wrapped with an explicit "this is data, not instructions" preamble. |
+| **Path traversal via agent names** | Names must match `^[\p{L}\p{N}_ -]{1,64}$` with no leading/trailing whitespace before touching the filesystem. |
+| **Plugin escape** | An `exec` containing a path must canonicalize to a location **inside** the plugin directory (checked with a `root + "/"` prefix to defeat sibling-directory tricks such as `plugin` vs `plugin-evil`). Each plugin runs with a hard timeout. |
+| **Unwanted Telegram senders** | Optional `tg_allowed_users` allow-list; bots, channels, group chats, Telegram's service account (`777000`) and stale messages (> 60 s) are dropped. |
+| **Runaway tool loops** | Chain depth limit per chat; failed limits surface as `TOOL_LOOP_LIMIT`. |
+| **Self-destruction** | The main agent can't be deleted or renamed through tool calls; an empty `agentName` no longer falls back to the caller. |
 
-Switching **any** theme or backdrop setting triggers a full, near-instant live UI rebuild (`rebuildUiLive`) that preserves your current selection, scroll position, and open settings page — no restart required.
+### 🕶 PII masking
 
----
+Before any text is sent to the LLM provider, numbers that look like phone numbers or IDs are swapped for stable placeholders; the mapping lives only in memory for the duration of the request.
 
-## 📋 Requirements
+```text
+User text → "Write to +380 50 123 4567 and to chat -1001234567890"
+Sent to LLM → "Write to [ID_1] and to chat [ID_2]"
+LLM args → { "chatId": "[ID_2]" }
+After restore → { "chatId": "-1001234567890" }   ← tools see real values
+```
 
-- **Qt 6** (developed against Qt 6.10, MinGW 64‑bit)
-- A **C++17**-compatible compiler
-- A **Telegram Bot token** (from [@BotFather](https://t.me/BotFather)) — only needed for the Telegram front end
-- A **Google Gemini API key**
-
----
-
-## 🚀 Setup & Build
-
-1. **Clone** the repository and open it in Qt Creator, or configure it directly via CMake/qmake.
-2. **Provide credentials** — either through `config.ini` (also editable live from the desktop app's Settings page) or environment variables loaded at startup:
-   ```ini
-   TELEGRAM_BOT_TOKEN=your_telegram_token
-   GEMINI_API_KEY=your_gemini_api_key
-   ```
-3. **Build**:
-   ```bash
-   qmake MCP_Agent.pro && make
-   # — or, with CMake —
-   cmake -B build -S .
-   cmake --build build
-   ```
-4. **Run** the resulting executable. On first launch it will:
-   - create the `Agents/` folder next to the binary,
-   - seed the default Orchestrator agent (**Главный агент**),
-   - and generate a default `config.ini` (dark theme, animated gradient backdrop).
+ISO dates (`YYYY-MM-DD`) are left alone. Restoration is applied recursively to every string in the call arguments.
 
 ---
 
-## 💡 Usage
+## 💬 Telegram integrations
 
-**Telegram**
-- Send any message — it's routed straight to the Orchestrator.
-- `/generate <description>` (alias `/image`) asks Gemini's image model to generate an image and sends it back.
-- `/start` shows the bot's intro message.
+| | **Bot API** (`TgBot`) | **User account** (`TelegramAccountClient`) |
+|---|---|---|
+| Transport | HTTPS long polling (`getUpdates`) | TDLib via `libtdjson`, loaded dynamically |
+| Identity | One bot, routed to the orchestrator | One session per agent, stored in `sessions/<agent>/` |
+| Input | Text and **photos** (downloaded and sent to a vision-capable model) | Text, photo, video, document, voice, audio, sticker, GIF (as previews) |
+| Output | Text, photos, stickers with per-message delays | Text via `SendMsgToTgUser` |
+| Extras | `/start` greeting | Tools to list chats and read history |
+| Auth | `telegram_token` | `api_id` / `api_hash` + phone, SMS/app code, optional 2FA |
 
-**Desktop app**
-- Pick the Orchestrator or any sub-agent from the sidebar and start typing — `Enter` sends, `Shift+Enter` inserts a newline.
-- `+` in the sidebar header spins up a brand-new sub-agent instantly.
-- The gear icon on any card opens its full settings (name, role, `soul`, `system_prompt`).
-- The gear icon at the bottom of the sidebar opens the app-wide Settings page (theme, backdrop, API keys).
+`libtdjson` is resolved at runtime (next to the executable → `../Frameworks` → project dir → system paths → Homebrew), so the application starts and works without TDLib; the account features simply report a clear error.
 
-**Either front end** — talk to the Orchestrator in plain language and it will translate your intent into the right function calls:
+---
 
-> *"Create a sub-agent called 'Support' whose job is to answer FAQs about our product."*
-> *"Rename 'Support' to 'Помощник'."*
-> *"Ask the Помощник agent what our refund policy is."*
-> *"Delete the Помощник agent, we don't need it anymore."*
+## 🔌 Plugin system
+
+A plugin is a directory under `PLUGINS/`. Anything executable works: Python, Node, Go, Rust, a shell script.
+
+```text
+PLUGINS/
+└── text-tools/
+    ├── manifest.md     # JSON manifest
+    ├── SKILL.md        # usage instructions served to the model on demand
+    └── main.py
+```
+
+**Manifest**
+
+```json
+{
+  "exec": "python3",
+  "args": ["main.py"],
+  "timeout_ms": 30000,
+  "functions": [
+    { "name": "text_upper" }
+  ]
+}
+```
+
+**Contract:** the host writes **one line of JSON** to stdin and closes it; the plugin replies with **one JSON object** on stdout.
+
+```jsonc
+// stdin
+{
+  "function": "text_upper",
+  "args": { "text": "hello" },
+  "context": {
+    "chatId": "-1",
+    "dataDir": "/…/PluginData/text-tools",   // private persistent storage
+    "settings": { "api_key": "…" }            // from [plugin_text-tools] in config.ini
+  }
+}
+
+// stdout
+{ "ok": true, "message": "HELLO" }
+```
+
+**Reference implementation**
+
+```python
+#!/usr/bin/env python3
+import json, sys
+
+req = json.loads(sys.stdin.readline())
+
+if req["function"] == "text_upper":
+    out = {"ok": True, "message": req["args"].get("text", "").upper()}
+else:
+    out = {"ok": False, "message": f"unknown function {req['function']}"}
+
+print(json.dumps(out))
+```
+
+Agents discover plugins from the system roster and pull the full instructions on demand with `getPluginSkill`, which keeps the base prompt small. Crashes, timeouts and non-JSON output are converted into readable error results the model can react to.
+
+---
+
+## 🚀 Getting started
+
+### Prerequisites
+
+- **Qt 6** (`Core`, `Gui`, `Widgets`, `Network`) with SSL support
+- A **C++20** compiler (GCC 11+, Clang 14+, MSVC 2022)
+- An [OpenRouter API key](https://openrouter.ai/keys)
+- *(optional)* [TDLib](https://github.com/tdlib/td) `libtdjson` for Telegram user accounts
+- *(optional)* a Telegram bot token from [@BotFather](https://t.me/BotFather)
+
+### Build
+
+The code expects an `APP_SRC_DIR` compile definition pointing at the source directory, where `config.ini` lives.
+
+```cmake
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network)
+
+target_compile_definitions(agents_orchestrator PRIVATE
+    APP_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+
+target_link_libraries(agents_orchestrator PRIVATE
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network)
+```
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+./build/agents_orchestrator
+```
+
+### Configure
+
+Create `config.ini` in the source directory (or set `OPENROUTER_API_KEY` in the environment). Most values can also be edited in-app under **Settings → API keys**.
+
+```ini
+openrouter_api_key=sk-or-v1-…
+ai_model=openai/gpt-4o-mini
+ai_max_tokens=2048
+
+telegram_token=123456789:AAExampleTokenValue
+api_id=12345
+api_hash=0123456789abcdef0123456789abcdef
+tg_allowed_users=111111111,222222222
+```
+
+> [!WARNING]
+> `config.ini` holds secrets in plain text. Add `config.ini`, `sessions/`, `Agents/`, `PluginData/` and `*.jsonl` to your `.gitignore`.
+
+### First run
+
+1. Launch the app. The orchestrator (**Главный агент** by default) is created on disk automatically.
+2. Open its settings (⚙) and write its **Soul** and **System Prompt**, including the JSON call-stack format from [Tool-calling protocol](#-tool-calling-protocol).
+3. Ask it to create a sub-agent, or press **+** in the sidebar.
+4. *(Optional)* Connect Telegram under **Agent settings → Services → Telegram**.
+
+---
+
+## ⚙️ Configuration reference
+
+| Key | Default | Description |
+|---|---|---|
+| `openrouter_api_key` | `$OPENROUTER_API_KEY` | OpenRouter credential |
+| `ai_model` | built-in default | Any OpenRouter chat model ID. Must support `response_format: json_object` |
+| `ai_max_tokens` | built-in default | Output token cap per request |
+| `telegram_token` | – | Bot API token |
+| `api_id`, `api_hash` | – | Telegram application credentials for TDLib sessions |
+| `tg_allowed_users` | *(empty = everyone)* | Comma-separated Telegram user IDs allowed to talk to account-backed agents |
+| `cmd_allowlist` | `ls,echo,pwd,whoami,date,hostname` | Programs `reqCMD` may run |
+| `theme` | `dark` | `dark` `light` `nord` `nordlight` `sunset` `sunsetlight` `pink` `pinkdark` `custom` |
+| `backdrop_mode` | `gradient` | `gradient` `aurora` `particles` `starfall` `image` `none` |
+| `backdrop_animation` | `true` | Toggle backdrop animation |
+| `backdrop_image_path` | – | Image or GIF used when `backdrop_mode=image` |
+| `[theme_<id>]` / `[custom_theme]` | – | Per-theme colour overrides (`bg panel card border text accent accent2 success danger`) |
+| `[plugin_<name>]` | – | Free-form key/values delivered to that plugin as `context.settings` |
 
 ---
 
 ## 🗂 Project layout
 
-| File | Responsibility |
-|---|---|
-| `tgbot.h/.cpp` | Telegram long-polling, sending messages/photos/stickers, wiring Gemini requests |
-| `agents.h/.cpp` | Agent lifecycle (create/delete/rename), prompt assembly, function-call execution, retry logic |
-| `jsonparser.h/.cpp` | Sanitizing and parsing Gemini's JSON `function_call_stack` responses |
-| `filemanager.h/.cpp` | Low-level file/directory operations backing each agent's prompt files and chat history |
-| `mainwindow.h/.cpp` | Desktop chat UI: sidebar, chat bubbles, live code panel, theming, settings dialogs |
+```text
+├── agents.cpp                  Core: prompt assembly, OpenRouter pipeline, retries,
+│                               tool dispatcher, agent lifecycle, plugin runner
+├── jsonparser.cpp              Tolerant model-output → AgentCall parser
+├── phonenumber.cpp             Reversible PII masking
+├── skillmanager.cpp            Plugin manifests, function registry, SKILL.md access
+├── filemanager.cpp             Agent files and JSONL conversation history
+├── requests.cpp                Minimal TLS HTTP/1.1 client (chunked decoding included)
+├── tgbot.cpp                   Telegram Bot API gateway
+├── telegramaccountclient.cpp   TDLib JSON client: auth, chats, history, send
+├── mainwindow.cpp              Qt Widgets UI, theming, chat, settings, code panel
+└── liquidglass.*               Glass rendering and colour tokens
+```
+
+Runtime data:
+
+```text
+<app dir>/
+├── Agents/<name>/{soul,min_info,system_prompt}.md
+├── PLUGINS/<plugin>/…
+├── PluginData/<plugin>/
+└── sessions/<agent>/            TDLib databases
+```
+
+---
+
+## 🧭 Design decisions
+
+- **Policy lives in C++, not in prompts.** Prompts are persuasion; code is enforcement. Anything with side effects is validated host-side.
+- **Everything is asynchronous.** Network calls, processes and Telegram requests are signal/slot driven; the UI thread never blocks. Every long-running operation has a timeout and a single-completion guard so callbacks can't fire twice.
+- **Fail loud, in the user's language.** Provider errors are decoded (including OpenRouter's nested `metadata.raw`) and surfaced in the chat instead of being swallowed in logs.
+- **Small dependency surface.** Only Qt. TDLib is loaded via `QLibrary` at runtime and the HTTPS client is ~150 lines over `QSslSocket`.
+- **Plugins are processes, not shared libraries.** Crash isolation, any language, trivially testable from a shell: `echo '{…}' | ./main.py`.
+- **Idempotent UI rebuilds.** Theme and backdrop changes rebuild the widget tree live while preserving agents, selection and active page.
+
+---
+
+## 🗺 Known limitations & roadmap
+
+- [ ] Persist the GUI chat-ID ↔ agent mapping across launches and store conversation history under a fixed application data directory rather than the working directory
+- [ ] Persist per-agent service credentials (Instagram / WhatsApp / Discord are UI stubs today; Telegram is functional)
+- [ ] Select the Telegram bot's target agent from configuration instead of the default orchestrator
+- [ ] Encrypt secrets at rest (OS keychain via QtKeychain) instead of plain `config.ini`
+- [ ] Follow HTTP redirects and support non-443 ports in the built-in HTTP client
+- [ ] Streaming responses and token-usage accounting
+- [ ] Automated tests for `JSONParser`, masking and the SSRF filter (all are pure functions and easy to cover)
 
 ---
 
 <div align="center">
 
-*Built with Qt, C++17, and a lot of JSON parsing defensiveness.*
+Built with Qt, C++20 and a healthy distrust of model output.
 
 </div>

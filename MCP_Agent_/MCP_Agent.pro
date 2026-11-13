@@ -17,16 +17,19 @@ SOURCES += \
     phonenumber.cpp \
     requests.cpp \
     skillmanager.cpp \
+    telegramaccountclient.cpp \
     tgbot.cpp
 
 HEADERS += \
     agents.h \
     filemanager.h \
     jsonparser.h \
+    liquidglass.h \
     mainwindow.h \
     phonenumber.h \
     requests.h \
     skillmanager.h \
+    telegramaccountclient.h \
     tgbot.h
 
 FORMS += \

@@ -67,27 +67,43 @@ void FileManager::SaveMessage(qint64 userid, const QString &userprompt,  const Q
     userfile.close();
 
 }
-
-QString FileManager::GetOldMessages(qint64 userid){
-    QFile userfile(QString::number(userid) +".jsonl");
+QString FileManager::GetOldMessages(qint64 userid) {
+    QFile userfile(QString::number(userid) + ".jsonl");
     if (!userfile.open(QIODevice::ReadOnly | QIODevice::Text)) {
         qDebug() << "Could not open file for reading:" << userfile.errorString();
         return "";
     }
-    QTextStream in(&userfile);
-    QString prompt;
-    while (!in.atEnd()) {
-        QString line = in.readLine().trimmed();
-        QJsonDocument doc = QJsonDocument::fromJson(line.toUtf8());
-        if (doc.isObject()) {
-            QJsonObject logObj = doc.object();
-            prompt.append("User: " + logObj["user_prompt"].toString() + "\n");
-            prompt.append("AI: " + logObj["ai_resp"].toString() + "\n\n");
 
-        }
+
+    QList<QPair<QString, QString>> entries;
+    QTextStream in(&userfile);
+    while (!in.atEnd()) {
+        const QString line = in.readLine().trimmed();
+        if (line.isEmpty()) continue;
+        const QJsonDocument doc = QJsonDocument::fromJson(line.toUtf8());
+        if (!doc.isObject()) continue;
+        const QJsonObject o = doc.object();
+        entries.append({o["user_prompt"].toString(), o["ai_resp"].toString()});
     }
     userfile.close();
-    return prompt;
+
+    const int MAX_BYTES = 4096;
+    const int MAX_FIELD_CHARS = 400;
+    auto clip = [&](const QString &s) {
+        return s.size() > MAX_FIELD_CHARS ? s.left(MAX_FIELD_CHARS) + "…" : s;
+    };
+
+    QStringList blocks;
+    int total = 0;
+    for (int i = entries.size() - 1; i >= 0; --i) {
+        const QString block = "User: " + clip(entries[i].first) + "\n"
+                              + "AI: " + clip(entries[i].second) + "\n\n";
+        const int sz = block.toUtf8().size();
+        if (total + sz > MAX_BYTES) break;
+        total += sz;
+        blocks.prepend(block);
+    }
+    return blocks.join("");
 }
 QString FileManager::getFile(const QString &fileToGet, QDir dirEngine){
     QString fullFilePath = dirEngine.absoluteFilePath(fileToGet + ".md");

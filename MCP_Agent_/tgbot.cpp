@@ -6,7 +6,7 @@
 #include <optional>
 #include <QSettings>
 
-TgBot::TgBot(QObject *parent) : QObject(parent) {
+TgBot::TgBot(agents *ag, QObject *parent) : QObject(parent), m_agents(ag) {
 
     phone = new phonenumber(this);
     QSettings settings(QString(APP_SRC_DIR) + "/config.ini", QSettings::IniFormat);
@@ -16,7 +16,6 @@ TgBot::TgBot(QObject *parent) : QObject(parent) {
     if (token.isEmpty()) {
         qWarning() << "ВНИМАНИЕ: telegram_token не найден в config.ini!";
     }
-    m_agents = new agents(this);
     connect(m_agents, &agents::requestSendMessagesDelayed,
             this, &TgBot::sendMessagesDelayed);
 

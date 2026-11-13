@@ -1,6 +1,8 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
-
+#include "liquidglass.h"
+#include <QComboBox>
+#include <QButtonGroup>
 #include <QLabel>
 #include <QLineEdit>
 #include <QVBoxLayout>
@@ -15,6 +17,7 @@
 #include <QScrollBar>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QShowEvent>
 #include <QTimer>
 #include <QRandomGenerator>
 #include <QDialog>
@@ -45,13 +48,22 @@
 #include <QSet>
 #include <QGuiApplication>
 #include <QClipboard>
+#include <QResizeEvent>
+#include <QFormLayout>
+#include <QSharedPointer>
+#include <QRegularExpression>
+#include <QCoreApplication>
+#include <QStatusBar>
+#include <QPointer>
 #include <cmath>
 #include <utility>
+#include <functional>
 
-// ---------------------------------------------------------------------------
-// Anonymous namespace: theming (interface layer) + min_info helpers (logic
-// layer). The two used to live in separate files; they are unified here.
-// ---------------------------------------------------------------------------
+#include "telegramaccountclient.h"
+
+// ===========================================================================
+// Палитры / токены
+// ===========================================================================
 namespace {
 
 qreal sharedBackdropPhase()
@@ -59,7 +71,7 @@ qreal sharedBackdropPhase()
     static QElapsedTimer clock;
     if (!clock.isValid())
         clock.start();
-    return clock.elapsed() * 0.00008846;
+    return clock.elapsed() * 0.00035;
 }
 
 QString kBgWindow;
@@ -184,26 +196,18 @@ void loadPalette(const QString &themeName)
     kTextMain = p.textMain; kTextSubtle = p.textSubtle; kTextMuted = p.textMuted;
     kAccent = p.accent; kAccent2 = p.accent2; kAccentGreen = p.accentGreen; kAccentRed = p.accentRed;
     kStatusIdle = p.statusIdle; kStatusActive = p.statusActive; kStatusBusy = p.statusBusy; kStatusError = p.statusError;
+
+    Glass::update(QColor(p.bgWindow), QColor(p.accent));
 }
 
-void applyElevation(QWidget *widget, qreal blurRadius = 24, int yOffset = 6, int alpha = 60)
-{
-    auto *shadow = new QGraphicsDropShadowEffect(widget);
-    shadow->setBlurRadius(blurRadius);
-    shadow->setOffset(0, yOffset);
-    shadow->setColor(QColor(0, 0, 0, alpha));
-    widget->setGraphicsEffect(shadow);
-}
+constexpr int kBackdropMargin = 6;
 
-constexpr int kBackdropMargin = 14;
-
-QColor mixColor(const QColor &a, const QColor &b, qreal t)
+QColor lerpColor(const QColor &a, const QColor &b, qreal t)
 {
-    return QColor(
-        a.red()   + int((b.red()   - a.red())   * t),
-        a.green() + int((b.green() - a.green()) * t),
-        a.blue()  + int((b.blue()  - a.blue())   * t)
-        );
+    return QColor::fromRgbF(a.redF()   + (b.redF()   - a.redF())   * t,
+                            a.greenF() + (b.greenF() - a.greenF()) * t,
+                            a.blueF()  + (b.blueF()  - a.blueF())  * t,
+                            a.alphaF() + (b.alphaF() - a.alphaF()) * t);
 }
 
 struct AvatarGradient { QColor start; QColor end; };
@@ -216,8 +220,9 @@ const QList<AvatarGradient> kAvatarGradients = {
     {QColor("#7fd4ff"), QColor("#2fa3e0")},
     };
 
-QString iconButtonStyle(const QString &hoverColor, const QString &hoverBg, int fontSizePx = 12, int radiusPx = 10)
+QString iconButtonStyle(const QString &hoverColor, int fontSizePx = 12, int radiusPx = 10)
 {
+    const QString hoverBg = Glass::css(Glass::withAlpha(QColor(hoverColor), 46));
     return QString(
                "QPushButton {"
                "   background: transparent;"
@@ -253,20 +258,37 @@ QString buildMinInfo(const QString &name, const QString &role)
     return result;
 }
 
+// Лёгкий markdown → HTML для пузырей: **жирный**, `код`, «- » списки, переводы строк.
+// typing=true добавляет мигающий-подобный курсор в конец.
+QString renderRich(const QString &raw, bool typing)
+{
+    QString s = raw.toHtmlEscaped();
+
+    static const QRegularExpression codeRe("`([^`\n]+)`");
+    static const QRegularExpression boldRe("\\*\\*(.+?)\\*\\*");
+    static const QRegularExpression listRe("(^|\n)- ");
+
+    s.replace(codeRe, QString("<span style=\"background-color:%1; font-family:monospace;\">&nbsp;\\1&nbsp;</span>").arg(kBorder));
+    s.replace(boldRe, "<b>\\1</b>");
+    s.replace(listRe, "\\1• ");
+    s.replace("\n", "<br/>");
+
+    if (typing)
+        s += QString("<span style=\"color:%1;\">&#9613;</span>").arg(kAccent);
+    return s;
 }
 
-// ===========================================================================
-// AnimatedBackdrop / NetworkBackdrop / ToggleSwitch / AnimatedIconButton /
-// AgentAvatar / ClickableLabel / ClickableFrame / SubagentCard
-//
-// Pure presentation classes
-// ===========================================================================
+} // anonymous namespace
 
+// ===========================================================================
+// AnimatedBackdrop
+// ===========================================================================
 AnimatedBackdrop::AnimatedBackdrop(QWidget *parent)
     : QWidget(parent)
 {
     QSettings settings(QString(APP_SRC_DIR) + "/config.ini", QSettings::IniFormat);
     m_mode = settings.value("backdrop_mode", "gradient").toString();
+    m_margin = kBackdropMargin;
 
     m_timer = new QTimer(this);
     connect(m_timer, &QTimer::timeout, this, [this]() {
@@ -275,7 +297,6 @@ AnimatedBackdrop::AnimatedBackdrop(QWidget *parent)
     });
 
     if (m_mode == "image") {
-        m_margin = 56;
         const QString path = settings.value("backdrop_image_path").toString();
         m_movie = new QMovie(path, QByteArray(), this);
         if (m_movie->isValid() && m_movie->frameCount() != 1) {
@@ -287,22 +308,20 @@ AnimatedBackdrop::AnimatedBackdrop(QWidget *parent)
             m_staticImage = QPixmap(path);
         }
     } else {
-        m_margin = kBackdropMargin;
         static const QStringList animatedModes = {"gradient", "aurora", "particles", "starfall"};
         if (animatedModes.contains(m_mode) && settings.value("backdrop_animation", true).toBool())
-            m_timer->start(130);
+            m_timer->start(50);
     }
 }
 
 void AnimatedBackdrop::paintEvent(QPaintEvent *)
 {
     QPainter painter(this);
+    paintContent(painter);
+}
 
-    const QRect inner = rect().adjusted(m_margin, m_margin, -m_margin, -m_margin);
-    QRegion visible(rect());
-    visible -= QRegion(inner);
-    painter.setClipRegion(visible);
-
+void AnimatedBackdrop::paintContent(QPainter &painter)
+{
     painter.setRenderHint(QPainter::Antialiasing);
     painter.fillRect(rect(), QColor(kBgWindow));
 
@@ -316,12 +335,31 @@ void AnimatedBackdrop::paintEvent(QPaintEvent *)
         return;
     }
 
-    if (m_mode == "aurora") { paintAurora(painter); return; }
+    if (m_mode == "aurora")    { paintAurora(painter);    return; }
     if (m_mode == "particles") { paintParticles(painter); return; }
-    if (m_mode == "starfall") { paintStarfall(painter); return; }
-    if (m_mode == "none") return;
+    if (m_mode == "starfall")  { paintStarfall(painter);  return; }
+    if (m_mode == "none")      return;
 
     paintBlobs(painter);
+}
+
+const QImage &AnimatedBackdrop::lowRes()
+{
+    const bool animated = (m_timer && m_timer->isActive()) || m_movie;
+    const bool stale = m_low.isNull() || m_lowForSize != size()
+                       || (animated && (!m_lowClock.isValid() || m_lowClock.elapsed() > 90));
+    if (stale) {
+        constexpr int kDiv = 6;                    // чем больше, тем сильнее размытие
+        const int w = qMax(1, width());
+        const int h = qMax(1, height());
+        m_low = QImage(qMax(1, w / kDiv), qMax(1, h / kDiv), QImage::Format_ARGB32_Premultiplied);
+        QPainter p(&m_low);
+        p.scale(qreal(m_low.width()) / w, qreal(m_low.height()) / h);
+        paintContent(p);
+        m_lowForSize = size();
+        m_lowClock.restart();
+    }
+    return m_low;
 }
 
 void AnimatedBackdrop::paintBlobs(QPainter &painter)
@@ -330,21 +368,25 @@ void AnimatedBackdrop::paintBlobs(QPainter &painter)
     const qreal w = width();
     const qreal h = height();
     const qreal span = qMax(w, h);
+    const float alpha = Glass::tokens().dark ? 0.62f : 0.50f;
 
     const QList<Blob> blobs = {
-                               { w * 0.28, h * 0.26, 0.55, 0.42, 0.0, 1.4, span * 0.20, kAccent },
-                               { w * 0.78, h * 0.62, 0.40, 0.60, 2.1, 0.4, span * 0.18, kAccent2 },
-                               { w * 0.52, h * 0.88, 0.48, 0.35, 4.0, 2.6, span * 0.16, kAccentGreen },
+                               { w * 0.25, h * 0.25, 0.55, 0.42, 0.0, 1.4, span * 0.32, kAccent },
+                               { w * 0.80, h * 0.60, 0.40, 0.60, 2.1, 0.4, span * 0.30, kAccent2 },
+                               { w * 0.50, h * 0.90, 0.48, 0.35, 4.0, 2.6, span * 0.26, kAccentGreen },
+                               { w * 0.90, h * 0.12, 0.33, 0.52, 1.1, 3.3, span * 0.22, kAccent2 },
                                };
 
     for (const auto &blob : blobs) {
-        const qreal cx = blob.ax + std::sin(m_phase * blob.freqX + blob.phaseX) * w * 0.12;
-        const qreal cy = blob.ay + std::cos(m_phase * blob.freqY + blob.phaseY) * h * 0.12;
+        const qreal cx = blob.ax + std::sin(m_phase * blob.freqX + blob.phaseX) * w * 0.16;
+        const qreal cy = blob.ay + std::cos(m_phase * blob.freqY + blob.phaseY) * h * 0.16;
 
         QRadialGradient gradient(cx, cy, blob.radius);
-        QColor inner(blob.color); inner.setAlphaF(0.15f);
-        QColor edge(blob.color); edge.setAlphaF(0.0f);
+        QColor inner(blob.color); inner.setAlphaF(alpha);
+        QColor mid(blob.color);   mid.setAlphaF(alpha * 0.45f);
+        QColor edge(blob.color);  edge.setAlphaF(0.0f);
         gradient.setColorAt(0.0, inner);
+        gradient.setColorAt(0.5, mid);
         gradient.setColorAt(1.0, edge);
 
         painter.setPen(Qt::NoPen);
@@ -355,26 +397,31 @@ void AnimatedBackdrop::paintBlobs(QPainter &painter)
 
 void AnimatedBackdrop::paintAurora(QPainter &painter)
 {
-    const qreal angle = m_phase * 14.0;
-    const qreal rad = angle * M_PI / 180.0;
-    const qreal cx = width() / 2.0;
-    const qreal cy = height() / 2.0;
-    const qreal len = qMax(width(), height());
+    const float alpha = Glass::tokens().dark ? 0.55f : 0.45f;
+    for (int band = 0; band < 2; ++band) {
+        const qreal angle = m_phase * 14.0 + band * 70.0;
+        const qreal rad = angle * M_PI / 180.0;
+        const qreal cx = width() / 2.0;
+        const qreal cy = height() / 2.0;
+        const qreal len = qMax(width(), height());
 
-    QLinearGradient gradient(cx - std::cos(rad) * len, cy - std::sin(rad) * len,
-                             cx + std::cos(rad) * len, cy + std::sin(rad) * len);
+        QLinearGradient gradient(cx - std::cos(rad) * len, cy - std::sin(rad) * len,
+                                 cx + std::cos(rad) * len, cy + std::sin(rad) * len);
 
-    QColor edge1(kAccent); edge1.setAlphaF(0.0f);
-    QColor mid1(kAccent); mid1.setAlphaF(0.20f);
-    QColor mid2(kAccent2); mid2.setAlphaF(0.20f);
-    QColor edge2(kAccent2); edge2.setAlphaF(0.0f);
+        const QString c1 = band == 0 ? kAccent : kAccent2;
+        const QString c2 = band == 0 ? kAccent2 : kAccentGreen;
+        QColor edge1(c1); edge1.setAlphaF(0.0f);
+        QColor mid1(c1);  mid1.setAlphaF(alpha);
+        QColor mid2(c2);  mid2.setAlphaF(alpha);
+        QColor edge2(c2); edge2.setAlphaF(0.0f);
 
-    gradient.setColorAt(0.0, edge1);
-    gradient.setColorAt(0.35, mid1);
-    gradient.setColorAt(0.65, mid2);
-    gradient.setColorAt(1.0, edge2);
+        gradient.setColorAt(0.0, edge1);
+        gradient.setColorAt(0.35, mid1);
+        gradient.setColorAt(0.65, mid2);
+        gradient.setColorAt(1.0, edge2);
 
-    painter.fillRect(rect(), gradient);
+        painter.fillRect(rect(), gradient);
+    }
 }
 
 void AnimatedBackdrop::paintParticles(QPainter &painter)
@@ -384,7 +431,8 @@ void AnimatedBackdrop::paintParticles(QPainter &painter)
                                       {0.02, 0.08, 0.0, 1.0}, {0.97, 0.15, 1.3, 0.8}, {0.06, 0.90, 2.6, 1.2},
                                       {0.94, 0.85, 0.7, 0.9}, {0.35, 0.03, 2.1, 1.1}, {0.65, 0.97, 3.4, 0.7},
                                       {0.03, 0.45, 1.8, 1.0}, {0.97, 0.55, 4.0, 0.8}, {0.20, 0.04, 2.9, 1.3},
-                                      {0.80, 0.96, 0.3, 0.9},
+                                      {0.80, 0.96, 0.3, 0.9}, {0.50, 0.50, 1.0, 0.6}, {0.25, 0.65, 3.0, 0.9},
+                                      {0.72, 0.30, 0.5, 1.1},
                                       };
 
     const QStringList palette = {kAccent, kAccent2, kAccentGreen};
@@ -395,11 +443,15 @@ void AnimatedBackdrop::paintParticles(QPainter &painter)
     int i = 0;
     for (const auto &spot : spots) {
         const qreal twinkle = 0.5 + 0.5 * std::sin(m_phase * spot.speed + spot.phase);
-        const qreal radius = 2.5 + twinkle * 2.5;
+        const qreal radius = (Glass::tokens().dark ? 70.0 : 80.0) + twinkle * 60.0;
 
         QColor color(palette.at(i % palette.size()));
-        color.setAlphaF(0.15f + twinkle * 0.35f);
-        painter.setBrush(color);
+        QRadialGradient g(QPointF(spot.nx * w, spot.ny * h), radius);
+        color.setAlphaF(0.20f + twinkle * 0.30f);
+        g.setColorAt(0.0, color);
+        color.setAlphaF(0.0f);
+        g.setColorAt(1.0, color);
+        painter.setBrush(g);
         painter.drawEllipse(QPointF(spot.nx * w, spot.ny * h), radius, radius);
         ++i;
     }
@@ -434,33 +486,36 @@ void AnimatedBackdrop::paintStarfall(QPainter &painter)
         const qreal alpha = qMin(fadeIn, fadeOut);
         if (alpha <= 0.02) continue;
 
-        QColor headColor(m.color); headColor.setAlphaF(float(0.8 * alpha));
+        QColor headColor(m.color); headColor.setAlphaF(float(0.9 * alpha));
         QColor tailColor(m.color); tailColor.setAlphaF(0.0f);
 
         QLinearGradient trailGradient(head, tail);
         trailGradient.setColorAt(0.0, headColor);
         trailGradient.setColorAt(1.0, tailColor);
 
-        QPen trailPen(QBrush(trailGradient), 1.6);
+        QPen trailPen(QBrush(trailGradient), 2.4);
         trailPen.setCapStyle(Qt::RoundCap);
         painter.setPen(trailPen);
         painter.drawLine(head, tail);
 
-        QColor dotColor(Qt::white); dotColor.setAlphaF(float(0.9 * alpha));
+        QColor dotColor(Qt::white); dotColor.setAlphaF(float(0.95 * alpha));
         painter.setPen(Qt::NoPen);
         painter.setBrush(dotColor);
-        painter.drawEllipse(head, 1.7, 1.7);
+        painter.drawEllipse(head, 2.4, 2.4);
     }
 }
 
+// ===========================================================================
+// NetworkBackdrop — стеклянная панель
+// ===========================================================================
 NetworkBackdrop::NetworkBackdrop(Surface surface, QWidget *parent)
     : QWidget(parent)
     , m_surface(surface)
 {
     QSettings settings(QString(APP_SRC_DIR) + "/config.ini", QSettings::IniFormat);
     m_mode = settings.value("backdrop_mode", "gradient").toString();
-    static const QStringList animatedModes = {"gradient", "aurora", "particles", "starfall"};
-    m_enabled = animatedModes.contains(m_mode) && settings.value("backdrop_animation", true).toBool();
+    // сетку узлов убрали: поверх стекла анимируется только «звездопад»
+    m_enabled = (m_mode == "starfall") && settings.value("backdrop_animation", true).toBool();
 
     m_timer = new QTimer(this);
     connect(m_timer, &QTimer::timeout, this, [this]() {
@@ -468,7 +523,7 @@ NetworkBackdrop::NetworkBackdrop(Surface surface, QWidget *parent)
         update();
     });
     if (m_enabled)
-        m_timer->start(130);
+        m_timer->start(90);
 }
 
 void NetworkBackdrop::paintEvent(QPaintEvent *)
@@ -476,20 +531,49 @@ void NetworkBackdrop::paintEvent(QPaintEvent *)
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
 
-    const int radius = m_surface == Surface::Card ? 14 : 0;
-    QPainterPath path;
-    path.addRoundedRect(rect(), radius, radius);
-    painter.setClipPath(path);
+    qreal inset = 0, radius = 20, strength = 1.0;
+    switch (m_surface) {
+    case Surface::Panel:  inset = 7; radius = 34;  strength = 1.0;  break;
+    case Surface::Window: inset = 7; radius = 34;  strength = 0.8;  break;
+    case Surface::Card:   inset = 0; radius = 26;  strength = 0.55; break;
+    case Surface::Pill:   inset = 0; radius = 999; strength = 0.9;  break; // полная капсула
+    }
 
-    QString fillColor = kBgPanel;
-    if (m_surface == Surface::Card) fillColor = kBgCard;
-    else if (m_surface == Surface::Window) fillColor = kBgWindow;
-    painter.fillRect(rect(), QColor(fillColor));
+    const QRectF r = QRectF(rect()).adjusted(inset, inset, -inset, -inset);
+    if (r.width() < 8 || r.height() < 8)      // схлопнутая панель кода
+        return;
 
-    if (!m_enabled) return;
+    AnimatedBackdrop *bd = nullptr;
+    for (QWidget *w = parentWidget(); w && !bd; w = w->parentWidget())
+        bd = qobject_cast<AnimatedBackdrop *>(w);
 
-    if (m_mode == "starfall") paintStarfall(painter);
-    else paintNodes(painter);
+    if (bd && bd->width() > 0 && bd->height() > 0) {
+        const QImage &low = bd->lowRes();
+        const QPoint o = mapTo(bd, QPoint(0, 0));
+        const qreal sx = qreal(low.width())  / bd->width();
+        const qreal sy = qreal(low.height()) / bd->height();
+        const QRectF src((o.x() + r.x()) * sx, (o.y() + r.y()) * sy, r.width() * sx, r.height() * sy);
+        Glass::paint(painter, r, radius, strength, low, src);
+    } else {
+        Glass::paint(painter, r, radius, strength, QImage(), QRectF());
+    }
+
+    if (m_glow > 0.001) {                       // фокус поля ввода: тонкое кольцо, без «неона»
+        painter.setBrush(Qt::NoBrush);
+        QColor halo(kAccent);
+        halo.setAlphaF(float(0.14 * m_glow));
+        painter.setPen(QPen(halo, 5.0));
+        painter.drawPath(Glass::shape(r.adjusted(1, 1, -1, -1), radius));
+        QColor ring(kAccent);
+        ring.setAlphaF(float(0.60 * m_glow));
+        painter.setPen(QPen(ring, 1.4));
+        painter.drawPath(Glass::shape(r.adjusted(0.8, 0.8, -0.8, -0.8), radius));
+    }
+
+    if (!m_enabled || m_mode != "starfall") return;
+
+    painter.setClipPath(Glass::shape(r, radius));
+    paintStarfall(painter);
 }
 
 void NetworkBackdrop::paintStarfall(QPainter &painter)
@@ -541,79 +625,22 @@ void NetworkBackdrop::paintStarfall(QPainter &painter)
     }
 }
 
+// Сетка узлов больше не используется в интерфейсе; метод оставлен, чтобы не менять заголовок.
 void NetworkBackdrop::paintNodes(QPainter &painter)
 {
-    struct Node { qreal nx, ny, freqX, freqY, phaseX, phaseY; };
-    static const QList<Node> nodes = {
-                                      {0.10, 0.15, 0.25, 0.20, 0.0, 1.1}, {0.30, 0.08, 0.22, 0.28, 1.4, 0.3},
-                                      {0.55, 0.12, 0.20, 0.24, 2.6, 2.0}, {0.80, 0.20, 0.26, 0.18, 0.7, 1.6},
-                                      {0.90, 0.45, 0.24, 0.22, 3.1, 0.5}, {0.75, 0.70, 0.18, 0.26, 1.9, 2.4},
-                                      {0.50, 0.85, 0.22, 0.20, 0.4, 1.3}, {0.20, 0.78, 0.25, 0.24, 2.2, 0.8},
-                                      {0.08, 0.50, 0.20, 0.28, 1.0, 2.7}, {0.40, 0.45, 0.23, 0.21, 2.8, 1.5},
-                                      {0.62, 0.55, 0.19, 0.25, 0.2, 2.1}, {0.35, 0.65, 0.21, 0.23, 1.6, 0.6},
-                                      };
-
-    const qreal w = width();
-    const qreal h = height();
-
-    QList<QPointF> points;
-    points.reserve(nodes.size());
-    for (const auto &node : nodes) {
-        const qreal x = node.nx * w + std::sin(m_phase * node.freqX + node.phaseX) * w * 0.06;
-        const qreal y = node.ny * h + std::cos(m_phase * node.freqY + node.phaseY) * h * 0.06;
-        points.append(QPointF(x, y));
-    }
-
-    const qreal linkDistance = qMin(w, h) * 0.32;
-    QPen linePen;
-    linePen.setWidthF(1.0);
-
-    QList<QPointF> pulses;
-    pulses.reserve(points.size());
-
-    for (int i = 0; i < points.size(); ++i) {
-        for (int j = i + 1; j < points.size(); ++j) {
-            const qreal dx = points[i].x() - points[j].x();
-            const qreal dy = points[i].y() - points[j].y();
-            const qreal dist = std::sqrt(dx * dx + dy * dy);
-            if (dist >= linkDistance) continue;
-
-            const qreal strength = 1.0 - dist / linkDistance;
-            QColor c(kBorder);
-            c.setAlphaF(float(0.16 * strength));
-            linePen.setColor(c);
-            painter.setPen(linePen);
-            painter.drawLine(points[i], points[j]);
-
-            const qreal speed = 0.5 + qreal((i * 3 + j * 7) % 5) * 0.12;
-            const qreal offset = qreal((i * 11 + j * 17) % 100) / 100.0;
-            const qreal t = std::fmod(m_phase * speed * 0.15 + offset, 1.0);
-            pulses.append(points[i] + (points[j] - points[i]) * t);
-        }
-    }
-
-    QColor pulseColor(kAccent2);
-    painter.setPen(Qt::NoPen);
-    for (const auto &pulse : pulses) {
-        pulseColor.setAlphaF(0.55f);
-        painter.setBrush(pulseColor);
-        painter.drawEllipse(pulse, 1.6, 1.6);
-    }
-
-    QColor dotColor(kAccent);
-    dotColor.setAlphaF(0.35f);
-    painter.setBrush(dotColor);
-    for (const auto &pt : points)
-        painter.drawEllipse(pt, 2.2, 2.2);
+    Q_UNUSED(painter);
 }
 
+// ===========================================================================
+// ToggleSwitch — тумблер в стиле iOS
+// ===========================================================================
 ToggleSwitch::ToggleSwitch(QWidget *parent)
     : QWidget(parent)
 {
-    setFixedSize(38, 22);
+    setFixedSize(46, 28);
     setCursor(Qt::PointingHandCursor);
     m_anim = new QPropertyAnimation(this, "knobPos", this);
-    m_anim->setDuration(180);
+    m_anim->setDuration(260);
     m_anim->setEasingCurve(QEasingCurve::OutCubic);
 }
 
@@ -645,23 +672,30 @@ void ToggleSwitch::mousePressEvent(QMouseEvent *event)
 
 void ToggleSwitch::paintEvent(QPaintEvent *)
 {
-    QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing);
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
 
-    const QRectF track(0, 0, width(), height());
-    const qreal radius = height() / 2.0;
-    const QColor trackColor = mixColor(QColor(kBorder), QColor(kAccentGreen), m_knobPos);
+    const qreal t = qBound(0.0, m_knobPos, 1.0);
+    const QRectF track = QRectF(rect()).adjusted(1, 1, -1, -1);
+    const qreal r = track.height() / 2.0;
 
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(trackColor);
-    painter.drawRoundedRect(track, radius, radius);
+    const QColor off = Glass::tokens().dark ? QColor(255, 255, 255, 40) : QColor(0, 0, 0, 38);
+    p.setPen(Qt::NoPen);
+    p.setBrush(lerpColor(off, QColor(kAccentGreen), t));
+    p.drawRoundedRect(track, r, r);
 
-    const qreal knobDiameter = height() - 4;
-    const qreal knobX = 2 + m_knobPos * (width() - knobDiameter - 4);
-    painter.setBrush(Qt::white);
-    painter.drawEllipse(QRectF(knobX, 2, knobDiameter, knobDiameter));
+    const qreal d = track.height() - 4;
+    const QRectF knob(track.left() + 2 + t * (track.width() - d - 4), track.top() + 2, d, d);
+
+    p.setBrush(QColor(0, 0, 0, 45));                       // мягкая тень ручки
+    p.drawEllipse(knob.translated(0, 1.5).adjusted(-0.5, -0.5, 0.5, 0.5));
+    p.setBrush(Qt::white);
+    p.drawEllipse(knob);
 }
 
+// ===========================================================================
+// AnimatedIconButton
+// ===========================================================================
 AnimatedIconButton::AnimatedIconButton(const QString &glyph, const QString &baseColor, const QString &hoverColor, QWidget *parent)
     : QPushButton(parent)
     , m_glyph(glyph)
@@ -670,8 +704,8 @@ AnimatedIconButton::AnimatedIconButton(const QString &glyph, const QString &base
 {
     setCursor(Qt::PointingHandCursor);
     m_anim = new QPropertyAnimation(this, "spin", this);
-    m_anim->setDuration(320);
-    m_anim->setEasingCurve(QEasingCurve::OutBack);
+    m_anim->setDuration(380);
+    m_anim->setEasingCurve(QEasingCurve::OutCubic);
 }
 
 void AnimatedIconButton::setSpin(qreal degrees) { m_spin = degrees; update(); }
@@ -711,6 +745,9 @@ void AnimatedIconButton::paintEvent(QPaintEvent *event)
     painter.drawText(QRect(-width() / 2, -height() / 2, width(), height()), Qt::AlignCenter, m_glyph);
 }
 
+// ===========================================================================
+// AgentAvatar — плоский градиентный кружок с инициалами
+// ===========================================================================
 AgentAvatar::AgentAvatar(QWidget *parent)
     : QWidget(parent)
 {
@@ -732,7 +769,7 @@ void AgentAvatar::setAgentName(const QString &name)
         initials += parts.first().at(1).toUpper();
 
     m_initials = initials.isEmpty() ? "?" : initials;
-    m_paletteIndex = trimmed.isEmpty() ? 0 : (qHash(trimmed) % kAvatarGradients.size());
+    m_paletteIndex = trimmed.isEmpty() ? 0 : int(qHash(trimmed) % uint(kAvatarGradients.size()));
     update();
 }
 
@@ -742,22 +779,26 @@ void AgentAvatar::paintEvent(QPaintEvent *)
     painter.setRenderHint(QPainter::Antialiasing);
 
     const auto &grad = kAvatarGradients.at(m_paletteIndex);
-    QLinearGradient gradient(0, 0, width(), height());
+    const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+
+    QLinearGradient gradient(r.topLeft(), r.bottomRight());
     gradient.setColorAt(0, grad.start);
     gradient.setColorAt(1, grad.end);
-
     painter.setPen(Qt::NoPen);
     painter.setBrush(gradient);
-    painter.drawEllipse(rect());
+    painter.drawEllipse(r);
 
     QFont font = painter.font();
-    font.setBold(true);
+    font.setWeight(QFont::DemiBold);
     font.setPointSize(qMax(9, height() / 3));
     painter.setFont(font);
     painter.setPen(Qt::white);
     painter.drawText(rect(), Qt::AlignCenter, m_initials);
 }
 
+// ===========================================================================
+// ClickableLabel / ClickableFrame
+// ===========================================================================
 ClickableLabel::ClickableLabel(QWidget *parent) : QLabel(parent) { setCursor(Qt::PointingHandCursor); }
 ClickableLabel::ClickableLabel(const QString &text, QWidget *parent) : QLabel(text, parent) { setCursor(Qt::PointingHandCursor); }
 
@@ -766,6 +807,23 @@ void ClickableLabel::mousePressEvent(QMouseEvent *event)
     if (event->button() == Qt::LeftButton) emit clicked();
     QLabel::mousePressEvent(event);
 }
+
+namespace {
+QString glassCardStyle(const char *selector, bool selected, bool hovered)
+{
+    const auto &g = Glass::tokens();
+    QString bg = "transparent";
+    QString border = "1px solid transparent";
+    if (selected) {
+        bg = Glass::css(g.selected);
+        border = "1px solid " + Glass::css(g.stroke);
+    } else if (hovered) {
+        bg = Glass::css(g.hover);
+    }
+    return QString("%1 { background-color: %2; border: %3; border-radius: 18px; }")
+        .arg(QString::fromLatin1(selector), bg, border);
+}
+} // namespace
 
 ClickableFrame::ClickableFrame(QWidget *parent)
     : QFrame(parent)
@@ -803,25 +861,12 @@ void ClickableFrame::leaveEvent(QEvent *event)
 
 void ClickableFrame::applyStyle()
 {
-    QString bg = "transparent";
-    QString borderLeft = "3px solid transparent";
-    if (m_selected) {
-        bg = kBgCardHover;
-        borderLeft = QString("3px solid %1").arg(kBorderSel);
-    } else if (m_hovered) {
-        bg = kBgCard;
-    }
-    setStyleSheet(QString(
-                      "ClickableFrame {"
-                      "   background-color: %1;"
-                      "   border: none;"
-                      "   border-left: %2;"
-                      "   border-top-right-radius: 8px;"
-                      "   border-bottom-right-radius: 8px;"
-                      "}"
-                      ).arg(bg, borderLeft));
+    setStyleSheet(glassCardStyle("ClickableFrame", m_selected, m_hovered));
 }
 
+// ===========================================================================
+// SubagentCard
+// ===========================================================================
 SubagentCard::SubagentCard(const QString &id, const QString &name, QWidget *parent)
     : QFrame(parent)
     , m_id(id)
@@ -858,7 +903,6 @@ SubagentCard::SubagentCard(const QString &id, const QString &name, QWidget *pare
                                   "   font-weight: 600;"
                                   "   padding: 0px;"
                                   "}"
-                                  "QLineEdit:focus { color: #ffffff; }"
                                   ).arg(kTextMain));
     connect(m_nameEdit, &QLineEdit::editingFinished, this, [this]() {
         m_avatar->setAgentName(m_nameEdit->text());
@@ -877,7 +921,7 @@ SubagentCard::SubagentCard(const QString &id, const QString &name, QWidget *pare
     m_settingsButton = new AnimatedIconButton("⚙", kTextMuted, kAccent, this);
     m_settingsButton->setFixedSize(28, 28);
     m_settingsButton->setToolTip("Настройки агента");
-    m_settingsButton->setStyleSheet(iconButtonStyle(kAccent, "rgba(137, 180, 250, 0.15)", 16, 13));
+    m_settingsButton->setStyleSheet(iconButtonStyle(kAccent, 16, 14));
     connect(m_settingsButton, &QPushButton::clicked, this, [this]() {
         emit settingsRequested(m_id);
     });
@@ -968,23 +1012,7 @@ void SubagentCard::leaveEvent(QEvent *event)
 
 void SubagentCard::applyCardStyle()
 {
-    QString bg = "transparent";
-    QString borderLeft = "3px solid transparent";
-    if (m_selected) {
-        bg = kBgCardHover;
-        borderLeft = QString("3px solid %1").arg(kBorderSel);
-    } else if (m_hovered) {
-        bg = kBgCard;
-    }
-    setStyleSheet(QString(
-                      "SubagentCard {"
-                      "   background-color: %1;"
-                      "   border: none;"
-                      "   border-left: %2;"
-                      "   border-top-right-radius: 8px;"
-                      "   border-bottom-right-radius: 8px;"
-                      "}"
-                      ).arg(bg, borderLeft));
+    setStyleSheet(glassCardStyle("SubagentCard", m_selected, m_hovered));
 }
 
 void SubagentCard::applyStatusStyle()
@@ -1014,33 +1042,51 @@ void SubagentCard::refreshRolePreview()
 }
 
 // ===========================================================================
-// CodeBlockWidget — сворачиваемый блок кода внутри пузыря сообщения
+// Виджеты чата: код-блок, пузырь с «печатью», индикатор набора, кнопка отправки
 // ===========================================================================
 namespace {
 
+class ClickRow : public QFrame
+{
+public:
+    std::function<void()> onClick;
+    explicit ClickRow(QWidget *parent = nullptr) : QFrame(parent) { setCursor(Qt::PointingHandCursor); }
+
+protected:
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() == Qt::LeftButton && onClick)
+            onClick();
+        QFrame::mousePressEvent(e);
+    }
+};
+
+// Сворачиваемый блок кода внутри пузыря
 class CodeBlockWidget : public QFrame
 {
 public:
     explicit CodeBlockWidget(const QString &code, QWidget *parent = nullptr)
         : QFrame(parent)
     {
+        const auto &g = Glass::tokens();
+
         auto *outer = new QVBoxLayout(this);
-        outer->setContentsMargins(0, 6, 0, 0);
+        outer->setContentsMargins(0, 8, 0, 0);
         outer->setSpacing(0);
 
-        m_header = new ClickableFrame(this);
+        m_header = new ClickRow(this);
+        m_header->setObjectName("codeHeader");
         m_header->setStyleSheet(QString(
-                                    "ClickableFrame {"
+                                    "QFrame#codeHeader {"
                                     "   background-color: %1;"
                                     "   border: 1px solid %2;"
-                                    "   border-top-left-radius: 10px;"
-                                    "   border-top-right-radius: 10px;"
-                                    "   border-left: none;"
+                                    "   border-top-left-radius: 12px;"
+                                    "   border-top-right-radius: 12px;"
                                     "}"
-                                    ).arg(kBgCard, kBorder));
+                                    ).arg(Glass::css(g.tint), Glass::css(g.stroke)));
 
         auto *headerLayout = new QHBoxLayout(m_header);
-        headerLayout->setContentsMargins(10, 6, 8, 6);
+        headerLayout->setContentsMargins(12, 6, 8, 6);
         headerLayout->setSpacing(6);
 
         m_chevron = new QLabel("▸", m_header);
@@ -1056,7 +1102,7 @@ public:
         auto *copyBtn = new AnimatedIconButton("⧉", kTextMuted, kAccent, m_header);
         copyBtn->setFixedSize(24, 24);
         copyBtn->setToolTip("Скопировать код");
-        copyBtn->setStyleSheet(iconButtonStyle(kAccent, "rgba(137, 180, 250, 0.15)"));
+        copyBtn->setStyleSheet(iconButtonStyle(kAccent));
         connect(copyBtn, &QPushButton::clicked, this, [code]() {
             QGuiApplication::clipboard()->setText(code);
         });
@@ -1064,7 +1110,7 @@ public:
         headerLayout->addWidget(m_chevron);
         headerLayout->addWidget(label, 1);
         headerLayout->addWidget(copyBtn);
-        connect(m_header, &ClickableFrame::clicked, this, [this]() { toggle(); });
+        m_header->onClick = [this]() { toggle(); };
 
         m_container = new QWidget(this);
         m_container->setMinimumHeight(0);
@@ -1083,18 +1129,19 @@ public:
         m_body->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         m_body->setStyleSheet(QString(
                                   "QPlainTextEdit {"
-                                  "   background-color: %1;"
-                                  "   color: %2;"
-                                  "   border: 1px solid %3;"
+                                  "   background-color: rgba(0,0,0,%4);"
+                                  "   color: %1;"
+                                  "   border: 1px solid %2;"
                                   "   border-top: none;"
-                                  "   border-bottom-left-radius: 10px;"
-                                  "   border-bottom-right-radius: 10px;"
+                                  "   border-bottom-left-radius: 12px;"
+                                  "   border-bottom-right-radius: 12px;"
                                   "   padding: 8px;"
                                   "   font-size: 12px;"
                                   "}"
                                   "QScrollBar:vertical { background: transparent; width: 8px; margin: 0px; }"
-                                  "QScrollBar::handle:vertical { background: %3; border-radius: 4px; min-height: 24px; }"
-                                  ).arg(kBgWindow, kTextMain, kBorder));
+                                  "QScrollBar::handle:vertical { background: %2; border-radius: 4px; min-height: 24px; }"
+                                  "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
+                                  ).arg(kTextMain, Glass::css(g.stroke)).arg(g.dark ? 90 : 18));
 
         containerLayout->addWidget(m_body);
 
@@ -1102,13 +1149,12 @@ public:
         outer->addWidget(m_container);
 
         const int lineH = QFontMetrics(m_body->font()).lineSpacing();
-        const int lines = qMin(code.count('\n') + 1, 14);
-        m_expandedHeight = lines * lineH + 20;
-
+        const int lines = qMin(int(code.count('\n')) + 1, 14);
+        m_expandedHeight = lines * lineH + 22;
         m_body->setFixedHeight(m_expandedHeight);
 
         m_anim = new QPropertyAnimation(m_container, "maximumHeight", this);
-        m_anim->setDuration(220);
+        m_anim->setDuration(300);
         m_anim->setEasingCurve(QEasingCurve::OutCubic);
     }
 
@@ -1124,7 +1170,7 @@ public:
     }
 
 private:
-    ClickableFrame *m_header;
+    ClickRow *m_header;
     QLabel *m_chevron;
     QWidget *m_container;
     QPlainTextEdit *m_body;
@@ -1133,16 +1179,23 @@ private:
     bool m_expanded = false;
 };
 
+// Пузырь сообщения: всплытие + «живая» печать текста
 class ChatBubble : public QFrame
 {
 public:
     ChatBubble(const QString &author, const QString &text, const QString &time,
-               bool isUser, const QString &code, QWidget *parent = nullptr)
+               bool isUser, const QString &code, bool typewriter,
+               std::function<void()> onGrow, QWidget *parent = nullptr)
         : QFrame(parent)
+        , m_text(text)
+        , m_code(code)
+        , m_onGrow(std::move(onGrow))
     {
-        auto *outer = new QHBoxLayout(this);
-        outer->setContentsMargins(0, 0, 0, 0);
-        outer->setSpacing(10);
+        const auto &g = Glass::tokens();
+
+        m_outer = new QHBoxLayout(this);
+        m_outer->setContentsMargins(0, 0, 0, 0);
+        m_outer->setSpacing(10);
 
         auto *avatar = new AgentAvatar(this);
         avatar->setFixedSize(30, 30);
@@ -1150,80 +1203,337 @@ public:
 
         auto *bubble = new QFrame(this);
         bubble->setObjectName("bubble");
-        bubble->setMaximumWidth(440);
-        const QString bg = isUser
-                               ? QString("qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 %1, stop:1 %2)").arg(kAccent, kAccent2)
-                               : kBgWindow;
+        bubble->setMaximumWidth(460);
+
+        // как в iMessage: свои сообщения — однотонный акцент, чужие — стекло; нижний угол у «хвостика» подрезан
+        const QString bg = isUser ? kAccent : Glass::css(g.tintStrong);
+        const QString border = isUser ? QString("transparent") : Glass::css(g.stroke);
         bubble->setStyleSheet(QString(
                                   "QFrame#bubble {"
                                   "   background: %1;"
                                   "   border: 1px solid %2;"
-                                  "   border-radius: 14px;"
+                                  "   border-radius: 20px;"
+                                  "   %3"
                                   "}"
-                                  ).arg(bg, isUser ? "transparent" : kBorder));
+                                  ).arg(bg, border,
+                                       isUser ? "border-bottom-right-radius: 6px;"
+                                              : "border-bottom-left-radius: 6px;"));
 
-        auto *bubbleLayout = new QVBoxLayout(bubble);
-        bubbleLayout->setContentsMargins(14, 10, 14, 10);
-        bubbleLayout->setSpacing(3);
+        m_bubbleLayout = new QVBoxLayout(bubble);
+        m_bubbleLayout->setContentsMargins(15, 10, 15, 11);
+        m_bubbleLayout->setSpacing(4);
 
         auto *headerRow = new QHBoxLayout();
-        headerRow->setSpacing(8);
+        headerRow->setSpacing(10);
         auto *authorLabel = new QLabel(author, bubble);
         authorLabel->setStyleSheet(QString("font-size: 11px; font-weight: 700; color: %1; border:none; background:transparent;")
-                                       .arg(isUser ? "rgba(255,255,255,0.85)" : kAccent));
+                                       .arg(isUser ? "rgba(255,255,255,0.9)" : kAccent));
         auto *timeLabel = new QLabel(time, bubble);
         timeLabel->setStyleSheet(QString("font-size: 10px; color: %1; border:none; background:transparent;")
-                                     .arg(isUser ? "rgba(255,255,255,0.6)" : kTextMuted));
+                                     .arg(isUser ? "rgba(255,255,255,0.65)" : kTextMuted));
         headerRow->addWidget(authorLabel);
         headerRow->addStretch();
         headerRow->addWidget(timeLabel);
-        bubbleLayout->addLayout(headerRow);
+        m_bubbleLayout->addLayout(headerRow);
 
         if (!text.trimmed().isEmpty()) {
-            auto *textLabel = new QLabel(bubble);
-            textLabel->setText(text.toHtmlEscaped().replace("\n", "<br/>"));
-            textLabel->setTextFormat(Qt::RichText);
-            textLabel->setWordWrap(true);
-            textLabel->setStyleSheet(QString("font-size: 13px; color: %1; border:none; background:transparent;")
-                                         .arg(isUser ? "#ffffff" : kTextMain));
-            bubbleLayout->addWidget(textLabel);
-        }
+            m_label = new QLabel(bubble);
+            m_label->setTextFormat(Qt::RichText);
+            m_label->setWordWrap(true);
+            m_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            QFont f = m_label->font();
+            f.setPixelSize(14);
+            m_label->setFont(f);
+            m_label->setStyleSheet(QString("color: %1; border:none; background:transparent;")
+                                       .arg(isUser ? "#ffffff" : kTextMain));
 
-        if (!code.trimmed().isEmpty()) {
-            auto *codeBlock = new CodeBlockWidget(code, bubble);
-            bubbleLayout->addWidget(codeBlock);
+            // фиксируем итоговую ширину заранее, чтобы пузырь не «дёргался» во время печати
+            const QFontMetrics fm(f);
+            int w = 0;
+            for (const QString &line : text.split('\n'))
+                w = qMax(w, fm.horizontalAdvance(line));
+            m_label->setMinimumWidth(qMin(w + 12, 420));
+
+            m_bubbleLayout->addWidget(m_label);
         }
 
         if (isUser) {
-            outer->addStretch(1);
-            outer->addWidget(bubble);
-            outer->addWidget(avatar, 0, Qt::AlignTop);
+            m_outer->addStretch(1);
+            m_outer->addWidget(bubble);
+            m_outer->addWidget(avatar, 0, Qt::AlignTop);
         } else {
-            outer->addWidget(avatar, 0, Qt::AlignTop);
-            outer->addWidget(bubble);
-            outer->addStretch(1);
+            m_outer->addWidget(avatar, 0, Qt::AlignTop);
+            m_outer->addWidget(bubble);
+            m_outer->addStretch(1);
+        }
+
+        if (m_label && typewriter) {
+            m_label->setText(renderRich(QString(), true));
+            startTyping();
+        } else {
+            if (m_label)
+                m_label->setText(renderRich(m_text, false));
+            addCode();
         }
     }
 
     void playEntrance()
     {
         auto *effect = new QGraphicsOpacityEffect(this);
+        effect->setOpacity(0.0);
         setGraphicsEffect(effect);
 
-        auto *anim = new QPropertyAnimation(effect, "opacity", this);
-        anim->setDuration(240);
+        auto *anim = new QVariantAnimation(this);
+        anim->setDuration(420);
         anim->setStartValue(0.0);
         anim->setEndValue(1.0);
         anim->setEasingCurve(QEasingCurve::OutCubic);
 
+        connect(anim, &QVariantAnimation::valueChanged, this, [this, effect](const QVariant &v) {
+            const qreal t = v.toReal();
+            effect->setOpacity(t);
+            m_outer->setContentsMargins(0, int((1.0 - t) * 24), 0, 0);
+        });
+
         QPointer<ChatBubble> self(this);
-        connect(anim, &QPropertyAnimation::finished, this, [self]() {
-            if (self)
-                self->setGraphicsEffect(nullptr);
+        connect(anim, &QVariantAnimation::finished, this, [self]() {
+            if (!self) return;
+            self->setGraphicsEffect(nullptr);
+            self->m_outer->setContentsMargins(0, 0, 0, 0);
         });
 
         anim->start(QAbstractAnimation::DeleteWhenStopped);
     }
+
+private:
+    void startTyping()
+    {
+        m_pos = 0;
+        m_timer = new QTimer(this);
+        m_timer->setInterval(18);
+        connect(m_timer, &QTimer::timeout, this, [this]() { advance(); });
+        m_timer->start();
+    }
+
+    void advance()
+    {
+        const int n = m_text.size();
+        const int step = qMax(1, n / 150) + int(QRandomGenerator::global()->bounded(2));
+        m_pos = qMin(n, m_pos + step);
+        if (m_pos < n && m_pos > 0 && m_text.at(m_pos - 1).isHighSurrogate())
+            ++m_pos;
+
+        m_label->setText(renderRich(m_text.left(m_pos), m_pos < n));
+        if (m_onGrow) m_onGrow();
+
+        if (m_pos >= n) {
+            m_timer->stop();
+            addCode();
+            if (m_onGrow) m_onGrow();
+            return;
+        }
+
+        // небольшие «вдохи» на знаках препинания
+        const QChar last = m_text.at(m_pos - 1);
+        m_timer->setInterval((last == '.' || last == '!' || last == '?' || last == '\n') ? 150
+                             : (last == ',' || last == ':' || last == ';') ? 70 : 18);
+    }
+
+    void addCode()
+    {
+        if (m_codeAdded || m_code.trimmed().isEmpty()) return;
+        m_codeAdded = true;
+        m_bubbleLayout->addWidget(new CodeBlockWidget(m_code, this->findChild<QFrame *>("bubble")));
+    }
+
+    QString m_text;
+    QString m_code;
+    std::function<void()> m_onGrow;
+    QHBoxLayout *m_outer = nullptr;
+    QVBoxLayout *m_bubbleLayout = nullptr;
+    QLabel *m_label = nullptr;
+    QTimer *m_timer = nullptr;
+    int m_pos = 0;
+    bool m_codeAdded = false;
+};
+
+// Три прыгающие точки
+class TypingDots : public QWidget
+{
+public:
+    explicit TypingDots(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setFixedSize(68, 38);
+        m_anim = new QVariantAnimation(this);
+        m_anim->setDuration(1200);
+        m_anim->setStartValue(0.0);
+        m_anim->setEndValue(1.0);
+        m_anim->setLoopCount(-1);
+        connect(m_anim, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) {
+            m_t = v.toReal();
+            update();
+        });
+    }
+
+protected:
+    void showEvent(QShowEvent *e) override { QWidget::showEvent(e); m_anim->start(); }
+    void hideEvent(QHideEvent *e) override { QWidget::hideEvent(e); m_anim->stop(); }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        const auto &g = Glass::tokens();
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+
+        const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        p.setPen(QPen(g.stroke, 1.0));
+        p.setBrush(g.tintStrong);
+        p.drawRoundedRect(r, r.height() / 2.0, r.height() / 2.0);
+
+        for (int i = 0; i < 3; ++i) {
+            const qreal phase = std::fmod(m_t - i * 0.16 + 1.0, 1.0);
+            const qreal bounce = qMax(0.0, std::sin(phase * 2.0 * M_PI));
+            QColor c(kTextMain);
+            c.setAlpha(int(110 + 145 * bounce));
+            p.setPen(Qt::NoPen);
+            p.setBrush(c);
+            const qreal cx = width() / 2.0 + (i - 1) * 14.0;
+            const qreal cy = height() / 2.0 - bounce * 5.0;
+            p.drawEllipse(QPointF(cx, cy), 3.6, 3.6);
+        }
+    }
+
+private:
+    QVariantAnimation *m_anim = nullptr;
+    qreal m_t = 0.0;
+};
+
+class TypingRow : public QWidget
+{
+public:
+    explicit TypingRow(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        auto *lay = new QHBoxLayout(this);
+        lay->setContentsMargins(0, 0, 0, 0);
+        lay->setSpacing(10);
+        m_avatar = new AgentAvatar(this);
+        m_avatar->setFixedSize(30, 30);
+        lay->addWidget(m_avatar, 0, Qt::AlignTop);
+        lay->addWidget(new TypingDots(this));
+        lay->addStretch(1);
+        setVisible(false);
+    }
+
+    void setAgentName(const QString &name) { m_avatar->setAgentName(name); }
+
+    void setActive(bool on)
+    {
+        if (on == isVisible()) return;
+        if (!on) { setVisible(false); setGraphicsEffect(nullptr); return; }
+
+        auto *effect = new QGraphicsOpacityEffect(this);
+        effect->setOpacity(0.0);
+        setGraphicsEffect(effect);
+        setVisible(true);
+
+        auto *a = new QPropertyAnimation(effect, "opacity", this);
+        a->setDuration(260);
+        a->setStartValue(0.0);
+        a->setEndValue(1.0);
+        a->setEasingCurve(QEasingCurve::OutCubic);
+        QPointer<TypingRow> self(this);
+        connect(a, &QPropertyAnimation::finished, this, [self]() {
+            if (self) self->setGraphicsEffect(nullptr);
+        });
+        a->start(QAbstractAnimation::DeleteWhenStopped);
+    }
+
+private:
+    AgentAvatar *m_avatar = nullptr;
+};
+
+// Круглая плоская кнопка отправки
+class SendButton : public QPushButton
+{
+public:
+    explicit SendButton(QWidget *parent = nullptr) : QPushButton(parent)
+    {
+        setFixedSize(44, 44);
+        setCursor(Qt::PointingHandCursor);
+        setToolTip("Отправить");
+        m_anim = new QVariantAnimation(this);
+        m_anim->setDuration(220);
+        m_anim->setEasingCurve(QEasingCurve::OutCubic);
+        connect(m_anim, &QVariantAnimation::valueChanged, this, [this](const QVariant &v) {
+            m_hover = v.toReal();
+            update();
+        });
+    }
+
+    void setReady(bool r)
+    {
+        if (m_ready == r) return;
+        m_ready = r;
+        update();
+    }
+
+protected:
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    void enterEvent(QEnterEvent *e) override
+#else
+    void enterEvent(QEvent *e) override
+#endif
+    {
+        animateHover(1.0);
+        QPushButton::enterEvent(e);
+    }
+    void leaveEvent(QEvent *e) override { animateHover(0.0); QPushButton::leaveEvent(e); }
+    void mousePressEvent(QMouseEvent *e) override { m_pressed = true; update(); QPushButton::mousePressEvent(e); }
+    void mouseReleaseEvent(QMouseEvent *e) override { m_pressed = false; update(); QPushButton::mouseReleaseEvent(e); }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.translate(rect().center());
+        const qreal s = 1.0 + 0.04 * m_hover - (m_pressed ? 0.08 : 0.0);
+        p.scale(s, s);
+
+        const qreal R = 18.0;
+        p.setPen(Qt::NoPen);
+        if (m_ready) {
+            QLinearGradient g(0, -R, 0, R);
+            g.setColorAt(0, QColor(kAccent).lighter(110));
+            g.setColorAt(1, QColor(kAccent));
+            p.setBrush(g);
+        } else {
+            p.setBrush(Glass::tokens().tintStrong);
+        }
+        p.drawEllipse(QPointF(0, 0), R, R);
+
+        QPen arrow(m_ready ? QColor(Qt::white) : QColor(kTextSubtle), 2.4);
+        arrow.setCapStyle(Qt::RoundCap);
+        arrow.setJoinStyle(Qt::RoundJoin);
+        p.setPen(arrow);
+        p.setBrush(Qt::NoBrush);
+        p.drawLine(QPointF(0, 7), QPointF(0, -7));
+        p.drawLine(QPointF(-6, -1), QPointF(0, -7));
+        p.drawLine(QPointF(6, -1), QPointF(0, -7));
+    }
+
+private:
+    void animateHover(qreal target)
+    {
+        m_anim->stop();
+        m_anim->setStartValue(m_hover);
+        m_anim->setEndValue(target);
+        m_anim->start();
+    }
+
+    QVariantAnimation *m_anim = nullptr;
+    qreal m_hover = 0.0;
+    bool m_pressed = false;
+    bool m_ready = false;
 };
 
 } // anonymous namespace
@@ -1248,7 +1558,7 @@ MainWindow::MainWindow(agents *agentManager, QWidget *parent)
             this, &MainWindow::handleThinkingContext);
 
     setWindowTitle("Agent Console");
-    resize(1080, 700);
+    resize(1120, 720);
     setStyleSheet(QString("QMainWindow { background-color: %1; }").arg(kBgWindow));
 
     m_mainAgentName = "Главный агент";
@@ -1273,6 +1583,21 @@ MainWindow::~MainWindow()
     delete ui;
 }
 
+void MainWindow::showEvent(QShowEvent *event)
+{
+    QMainWindow::showEvent(event);
+    if (m_introPlayed) return;
+    m_introPlayed = true;
+
+    setWindowOpacity(0.0);
+    auto *a = new QPropertyAnimation(this, "windowOpacity", this);
+    a->setDuration(520);
+    a->setStartValue(0.0);
+    a->setEndValue(1.0);
+    a->setEasingCurve(QEasingCurve::OutCubic);
+    a->start(QAbstractAnimation::DeleteWhenStopped);
+}
+
 qint64 MainWindow::uiChatIdFor(const QString &agentId)
 {
     auto it = m_uiChatIds.constFind(agentId);
@@ -1287,7 +1612,17 @@ qint64 MainWindow::uiChatIdFor(const QString &agentId)
 
 void MainWindow::handleAgentReplyForUI(qint64 chatId, const QList<DelayedMessage> &messages)
 {
-    const QString agentId = m_uiChatIds.key(chatId);
+    QString agentId;
+    bool fromUi = false;
+    for (auto it = m_uiChatIds.constBegin(); it != m_uiChatIds.constEnd(); ++it) {
+        if (it.value() == chatId) {
+            agentId = it.key();
+            fromUi = true;
+            break;
+        }
+    }
+    if (fromUi)
+        m_pending.remove(agentId);
 
     for (const DelayedMessage &msg : messages) {
         if (!msg.text.isEmpty() || !msg.code.isEmpty())
@@ -1299,6 +1634,7 @@ void MainWindow::handleAgentReplyForUI(qint64 chatId, const QList<DelayedMessage
         }
     }
 
+    updateTypingIndicator();
     refreshAgentsFromDisk();
 }
 
@@ -1368,10 +1704,12 @@ void MainWindow::syncAgentName(const QString &backendName, const QString &newNam
     m_agentManager->editFile(backendName, buildMinInfo(newName, role), "min_info");
 }
 
+// ===========================================================================
+// Страница настроек
+// ===========================================================================
 QWidget *MainWindow::buildSettingsPage()
 {
-    auto *page = new QWidget(this);
-    page->setStyleSheet(QString("background-color: %1;").arg(kBgWindow));
+    auto *page = new NetworkBackdrop(NetworkBackdrop::Surface::Window, this);
 
     auto *scroll = new QScrollArea(page);
     scroll->setWidgetResizable(true);
@@ -1381,12 +1719,13 @@ QWidget *MainWindow::buildSettingsPage()
                               "QScrollBar:vertical { background: transparent; width: 8px; margin: 0px; }"
                               "QScrollBar::handle:vertical { background: %1; border-radius: 4px; min-height: 24px; }"
                               "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
-                              ).arg(kBorder));
+                              ).arg(Glass::css(Glass::tokens().stroke)));
+    scroll->viewport()->setStyleSheet("background: transparent;");
 
     auto *content = new QWidget(scroll);
     content->setStyleSheet("background: transparent;");
     auto *outer = new QVBoxLayout(content);
-    outer->setContentsMargins(36, 30, 36, 30);
+    outer->setContentsMargins(42, 36, 42, 36);
     outer->setSpacing(12);
 
     auto *backRow = new QHBoxLayout();
@@ -1402,27 +1741,31 @@ QWidget *MainWindow::buildSettingsPage()
     outer->addLayout(backRow);
 
     auto *pageTitle = new QLabel("Настройки", content);
-    pageTitle->setStyleSheet(QString("color: %1; font-size: 20px; font-weight: 700; border: none; background: transparent;").arg(kTextMain));
+    pageTitle->setStyleSheet(QString("color: %1; font-size: 26px; font-weight: 700; border: none; background: transparent;").arg(kTextMain));
     outer->addWidget(pageTitle);
 
     auto pillButtonStyle = [](bool active) {
+        const auto &g = Glass::tokens();
         return QString(
                    "QPushButton {"
                    "   background-color: %1;"
                    "   color: %2;"
                    "   border: 1px solid %3;"
-                   "   border-radius: 10px;"
+                   "   border-radius: 18px;"
                    "   padding: 10px 18px;"
                    "   font-size: 13px;"
                    "   font-weight: 600;"
                    "}"
-                   "QPushButton:hover { border-color: %4; }"
-                   ).arg(active ? kAccent : kBgCard, active ? "#ffffff" : kTextMain, active ? kAccent : kBorder, kAccent);
+                   "QPushButton:hover { border-color: %4; }")
+            .arg(active ? kAccent : Glass::css(g.tint),
+                 active ? QString("#ffffff") : kTextMain,
+                 active ? kAccent : Glass::css(g.stroke),
+                 kAccent);
     };
 
     auto addEyebrow = [&](const QString &text) {
         auto *label = new QLabel(text, content);
-        label->setStyleSheet(QString("color: %1; font-size: 10px; font-weight: 700; border: none; background: transparent; margin-top: 12px;").arg(kTextMuted));
+        label->setStyleSheet(QString("color: %1; font-size: 10px; font-weight: 700; border: none; background: transparent; margin-top: 14px; letter-spacing: 1px;").arg(kTextMuted));
         outer->addWidget(label);
     };
 
@@ -1430,6 +1773,7 @@ QWidget *MainWindow::buildSettingsPage()
 
     addEyebrow("ТЕМА ОФОРМЛЕНИЯ");
     const QString currentTheme = settings.value("theme", "dark").toString();
+    const bool currentIsDark = QColor(builtinBaseColors(currentTheme).bg).lightness() < 128;
 
     auto smallLabelStyle = [&]() {
         return QString("color: %1; font-size: 13px; border: none; background: transparent;").arg(kTextMuted);
@@ -1450,9 +1794,10 @@ QWidget *MainWindow::buildSettingsPage()
         auto *sunLabel = new QLabel("☀", content);
         sunLabel->setStyleSheet(smallLabelStyle());
 
+        // включён = тёмная версия темы
         auto *modeToggle = new ToggleSwitch(content);
         modeToggle->setToolTip("Светлая / тёмная версия темы");
-        if (isLight) modeToggle->setChecked(false, false);
+        modeToggle->setChecked(familyActive ? !isLight : currentIsDark, false);
 
         auto *moonLabel = new QLabel("🌙", content);
         moonLabel->setStyleSheet(smallLabelStyle());
@@ -1466,9 +1811,9 @@ QWidget *MainWindow::buildSettingsPage()
 
         const QString editTargetId = familyActive ? currentTheme : family.darkId;
         auto *editBtn = new AnimatedIconButton("✎", kTextMuted, kAccent, content);
-        editBtn->setFixedSize(26, 26);
+        editBtn->setFixedSize(28, 28);
         editBtn->setToolTip("Редактировать цвета темы «" + themeDisplayName(editTargetId) + "»");
-        editBtn->setStyleSheet(iconButtonStyle(kAccent, "rgba(137, 180, 250, 0.15)"));
+        editBtn->setStyleSheet(iconButtonStyle(kAccent, 12, 14));
         connect(editBtn, &QPushButton::clicked, this, [this, editTargetId]() { openThemeCreator(editTargetId); });
 
         familyRow->addWidget(familyBtn);
@@ -1490,9 +1835,9 @@ QWidget *MainWindow::buildSettingsPage()
         connect(customBtn, &QPushButton::clicked, this, [this]() { switchTheme("custom"); });
 
         auto *editCustomBtn = new AnimatedIconButton("✎", kTextMuted, kAccent, content);
-        editCustomBtn->setFixedSize(26, 26);
+        editCustomBtn->setFixedSize(28, 28);
         editCustomBtn->setToolTip("Редактировать цвета пользовательской темы");
-        editCustomBtn->setStyleSheet(iconButtonStyle(kAccent, "rgba(137, 180, 250, 0.15)"));
+        editCustomBtn->setStyleSheet(iconButtonStyle(kAccent, 12, 14));
         connect(editCustomBtn, &QPushButton::clicked, this, [this]() { openThemeCreator("custom"); });
 
         customRow->addWidget(customBtn);
@@ -1569,7 +1914,7 @@ QWidget *MainWindow::buildSettingsPage()
     scroll->setWidget(content);
 
     auto *pageLayout = new QVBoxLayout(page);
-    pageLayout->setContentsMargins(0, 0, 0, 0);
+    pageLayout->setContentsMargins(7, 7, 7, 7);
     pageLayout->addWidget(scroll);
 
     return page;
@@ -1632,6 +1977,8 @@ void MainWindow::performUiRebuild()
 
     if (activePage == 1)
         showSettings();
+
+    updateTypingIndicator();
 }
 
 void MainWindow::buildUi()
@@ -1640,15 +1987,10 @@ void MainWindow::buildUi()
 
     auto *shell = new QFrame(backdrop);
     shell->setObjectName("shell");
-    shell->setStyleSheet(QString(
-                             "QFrame#shell {"
-                             "   background-color: %1;"
-                             "   border: 1px solid %2;"
-                             "}"
-                             ).arg(kBgWindow, kBorder));
+    shell->setStyleSheet("QFrame#shell { background: transparent; border: none; }");
 
     auto *shellLayout = new QVBoxLayout(shell);
-    shellLayout->setContentsMargins(1, 1, 1, 1);
+    shellLayout->setContentsMargins(0, 0, 0, 0);
     shellLayout->setSpacing(0);
 
     pageStack = new QStackedWidget(shell);
@@ -1664,8 +2006,33 @@ void MainWindow::buildUi()
     setCentralWidget(backdrop);
 }
 
-void MainWindow::showSettings() { pageStack->setCurrentIndex(1); }
-void MainWindow::showMainView() { pageStack->setCurrentIndex(0); }
+void MainWindow::fadeToPage(int index)
+{
+    if (!pageStack || pageStack->currentIndex() == index)
+        return;
+
+    pageStack->setCurrentIndex(index);
+    QWidget *w = pageStack->currentWidget();
+    if (!w) return;
+
+    auto *effect = new QGraphicsOpacityEffect(w);
+    effect->setOpacity(0.0);
+    w->setGraphicsEffect(effect);
+
+    auto *anim = new QPropertyAnimation(effect, "opacity", w);
+    anim->setDuration(260);
+    anim->setStartValue(0.0);
+    anim->setEndValue(1.0);
+    anim->setEasingCurve(QEasingCurve::OutCubic);
+    QPointer<QWidget> guard(w);
+    connect(anim, &QPropertyAnimation::finished, w, [guard]() {
+        if (guard) guard->setGraphicsEffect(nullptr);
+    });
+    anim->start(QAbstractAnimation::DeleteWhenStopped);
+}
+
+void MainWindow::showSettings() { fadeToPage(1); }
+void MainWindow::showMainView() { fadeToPage(0); }
 
 QWidget *MainWindow::buildMainView()
 {
@@ -1675,17 +2042,11 @@ QWidget *MainWindow::buildMainView()
     layout->setSpacing(0);
 
     layout->addWidget(buildSidebar());
-
-    auto *vSep = new QFrame(view);
-    vSep->setFrameShape(QFrame::VLine);
-    vSep->setStyleSheet(QString("background-color: %1; border: none; max-width: 1px;").arg(kBorder));
-    layout->addWidget(vSep);
-
     layout->addWidget(buildChatArea(), 1);
 
     codePanelSeparator = new QFrame(view);
-    codePanelSeparator->setFrameShape(QFrame::VLine);
-    codePanelSeparator->setStyleSheet(QString("background-color: %1; border: none; max-width: 1px;").arg(kBorder));
+    codePanelSeparator->setFixedWidth(0);
+    codePanelSeparator->setStyleSheet("background: transparent; border: none;");
     codePanelSeparator->setVisible(false);
     layout->addWidget(codePanelSeparator);
 
@@ -1701,7 +2062,7 @@ QWidget *MainWindow::buildSidebar()
     panel->setFixedWidth(kSidebarExpandedWidth);
 
     auto *layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(14, 16, 14, 14);
+    layout->setContentsMargins(21, 23, 21, 21);
     layout->setSpacing(10);
 
     mainStatusCard = new ClickableFrame(panel);
@@ -1734,7 +2095,6 @@ QWidget *MainWindow::buildSidebar()
                                     "   font-weight: 600;"
                                     "   padding: 0px;"
                                     "}"
-                                    "QLineEdit:focus { color: #ffffff; }"
                                     ).arg(kTextMain));
     connect(mainNameEdit, &QLineEdit::editingFinished, this, [this]() {
         const QString oldName = m_mainAgentName;
@@ -1757,7 +2117,7 @@ QWidget *MainWindow::buildSidebar()
     mainSettingsButton = new AnimatedIconButton("⚙", kTextMuted, kAccent, mainStatusCard);
     mainSettingsButton->setFixedSize(28, 28);
     mainSettingsButton->setToolTip("Настройки главного агента");
-    mainSettingsButton->setStyleSheet(iconButtonStyle(kAccent, "rgba(137, 180, 250, 0.15)", 16, 13));
+    mainSettingsButton->setStyleSheet(iconButtonStyle(kAccent, 16, 14));
     connect(mainSettingsButton, &QPushButton::clicked, this, &MainWindow::openMainAgentSettings);
 
     mainRow->addWidget(mainAvatar);
@@ -1789,34 +2149,34 @@ QWidget *MainWindow::buildSidebar()
 
     auto *sep = new QFrame(panel);
     sep->setFrameShape(QFrame::HLine);
-    sep->setStyleSheet(QString("background-color: %1; border: none; max-height: 1px;").arg(kBorder));
+    sep->setStyleSheet(QString("background-color: %1; border: none; max-height: 1px;").arg(Glass::css(Glass::tokens().stroke)));
     layout->addWidget(sep);
 
     auto *headerRow = new QHBoxLayout();
     headerRow->setSpacing(8);
 
     auto *title = new QLabel("АГЕНТЫ", panel);
-    title->setStyleSheet(QString("color: %1; font-size: 10px; font-weight: 700; border: none; background: transparent;").arg(kTextMuted));
+    title->setStyleSheet(QString("color: %1; font-size: 10px; font-weight: 700; border: none; background: transparent; letter-spacing: 1px;").arg(kTextMuted));
     sidebarTitleLabel = title;
 
     subagentCountLabel = new QLabel("0", panel);
     subagentCountLabel->setAlignment(Qt::AlignCenter);
-    subagentCountLabel->setFixedSize(18, 18);
+    subagentCountLabel->setFixedSize(20, 18);
     subagentCountLabel->setStyleSheet(QString(
                                           "color: %1; font-size: 10px; font-weight: bold; background-color: %2; border-radius: 9px;"
-                                          ).arg(kTextSubtle, kBgCard));
+                                          ).arg(kTextSubtle, Glass::css(Glass::tokens().tintStrong)));
 
     refreshAgentsButton = new AnimatedIconButton("⟳", kTextMuted, kAccent, panel);
-    refreshAgentsButton->setFixedSize(22, 22);
+    refreshAgentsButton->setFixedSize(24, 24);
     refreshAgentsButton->setToolTip("Обновить список агентов");
-    refreshAgentsButton->setStyleSheet(iconButtonStyle(kAccent, "rgba(137, 180, 250, 0.15)"));
+    refreshAgentsButton->setStyleSheet(iconButtonStyle(kAccent, 12, 12));
     connect(refreshAgentsButton, &QPushButton::clicked, this, &MainWindow::refreshAgentsFromDisk);
 
     addSubagentButton = new QPushButton("+", panel);
-    addSubagentButton->setFixedSize(22, 22);
+    addSubagentButton->setFixedSize(24, 24);
     addSubagentButton->setCursor(Qt::PointingHandCursor);
     addSubagentButton->setToolTip("Добавить агента");
-    addSubagentButton->setStyleSheet(iconButtonStyle(kAccent, "rgba(137, 180, 250, 0.15)"));
+    addSubagentButton->setStyleSheet(iconButtonStyle(kAccent, 14, 12));
     connect(addSubagentButton, &QPushButton::clicked, this, [this]() {
         const QString id = addSubagent();
         const QString backendName = m_agentFolderNames.value(id);
@@ -1829,9 +2189,9 @@ QWidget *MainWindow::buildSidebar()
     });
 
     collapseListButton = new AnimatedIconButton("◂", kTextMuted, kAccent, panel);
-    collapseListButton->setFixedSize(22, 22);
+    collapseListButton->setFixedSize(24, 24);
     collapseListButton->setToolTip("Свернуть боковую панель");
-    collapseListButton->setStyleSheet(iconButtonStyle(kAccent, "rgba(137, 180, 250, 0.15)"));
+    collapseListButton->setStyleSheet(iconButtonStyle(kAccent, 12, 12));
     connect(collapseListButton, &QPushButton::clicked, this, &MainWindow::toggleAgentListCollapsed);
 
     headerRow->addWidget(title);
@@ -1846,12 +2206,12 @@ QWidget *MainWindow::buildSidebar()
     subagentsScroll->setWidgetResizable(true);
     subagentsScroll->setFrameShape(QFrame::NoFrame);
     subagentsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    subagentsScroll->setStyleSheet(
-        "QScrollArea { background: transparent; border: none; }"
-        "QScrollBar:vertical { background: transparent; width: 8px; margin: 0px; }"
-        "QScrollBar::handle:vertical { background: #313244; border-radius: 4px; min-height: 24px; }"
-        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
-        );
+    subagentsScroll->setStyleSheet(QString(
+                                       "QScrollArea { background: transparent; border: none; }"
+                                       "QScrollBar:vertical { background: transparent; width: 8px; margin: 0px; }"
+                                       "QScrollBar::handle:vertical { background: %1; border-radius: 4px; min-height: 24px; }"
+                                       "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
+                                       ).arg(Glass::css(Glass::tokens().stroke)));
     subagentsScroll->viewport()->setStyleSheet("background: transparent;");
 
     auto *scrollContent = new QWidget(subagentsScroll);
@@ -1866,84 +2226,103 @@ QWidget *MainWindow::buildSidebar()
 
     auto *sep2 = new QFrame(panel);
     sep2->setFrameShape(QFrame::HLine);
-    sep2->setStyleSheet(QString("background-color: %1; border: none; max-height: 1px;").arg(kBorder));
+    sep2->setStyleSheet(QString("background-color: %1; border: none; max-height: 1px;").arg(Glass::css(Glass::tokens().stroke)));
     layout->addWidget(sep2);
 
     settingsEntryButton = new AnimatedIconButton("⚙", kTextMuted, kAccent, panel);
-    settingsEntryButton->setFixedSize(36, 36);
+    settingsEntryButton->setFixedSize(38, 38);
     settingsEntryButton->setToolTip("Настройки приложения");
-    settingsEntryButton->setStyleSheet(iconButtonStyle(kAccent, "rgba(137, 180, 250, 0.15)", 20, 16));
+    settingsEntryButton->setStyleSheet(iconButtonStyle(kAccent, 20, 19));
     connect(settingsEntryButton, &QPushButton::clicked, this, &MainWindow::showSettings);
     layout->addWidget(settingsEntryButton, 0, Qt::AlignLeft);
 
     return panel;
 }
 
+// ===========================================================================
+// Область чата
+// ===========================================================================
 QWidget *MainWindow::buildChatArea()
 {
     auto *panel = new NetworkBackdrop(NetworkBackdrop::Surface::Window, this);
 
     auto *layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(20, 18, 20, 20);
+    layout->setContentsMargins(23, 21, 23, 23);
     layout->setSpacing(12);
 
-    auto *headerRow = new QHBoxLayout();
-    headerRow->setSpacing(10);
+    // --- шапка: стеклянная «таблетка» ---
+    auto *headerGlass = new NetworkBackdrop(NetworkBackdrop::Surface::Pill, panel);
+    headerGlass->setFixedHeight(58);
+    auto *headerRow = new QHBoxLayout(headerGlass);
+    headerRow->setContentsMargins(14, 8, 18, 8);
+    headerRow->setSpacing(12);
 
-    chatHeaderAvatar = new AgentAvatar(panel);
-    chatHeaderAvatar->setFixedSize(32, 32);
+    chatHeaderAvatar = new AgentAvatar(headerGlass);
+    chatHeaderAvatar->setFixedSize(38, 38);
     chatHeaderAvatar->setAgentName(m_mainAgentName);
 
-    chatHeaderLabel = new QLabel(m_mainAgentName, panel);
+    auto *titleCol = new QVBoxLayout();
+    titleCol->setSpacing(0);
+    chatHeaderLabel = new QLabel(m_mainAgentName, headerGlass);
     chatHeaderLabel->setStyleSheet(QString("color: %1; font-size: 16px; font-weight: 700; border: none; background: transparent;").arg(kTextMain));
+    chatHeaderSub = new QLabel("● в сети", headerGlass);
+    chatHeaderSub->setStyleSheet(QString("color: %1; font-size: 11px; border: none; background: transparent;").arg(kAccentGreen));
+    titleCol->addWidget(chatHeaderLabel);
+    titleCol->addWidget(chatHeaderSub);
 
     headerRow->addWidget(chatHeaderAvatar);
-    headerRow->addWidget(chatHeaderLabel);
+    headerRow->addLayout(titleCol);
     headerRow->addStretch(1);
-    layout->addLayout(headerRow);
+    layout->addWidget(headerGlass);
 
+    // --- лента сообщений ---
     auto *chatBackdropContainer = new NetworkBackdrop(NetworkBackdrop::Surface::Card, panel);
     auto *chatBackdropLayout = new QVBoxLayout(chatBackdropContainer);
-    chatBackdropLayout->setContentsMargins(0, 0, 0, 0);
+    chatBackdropLayout->setContentsMargins(2, 2, 2, 2);
 
     chatScroll = new QScrollArea(chatBackdropContainer);
     chatScroll->setWidgetResizable(true);
     chatScroll->setFrameShape(QFrame::NoFrame);
     chatScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     chatScroll->setStyleSheet(QString(
-                                  "QScrollArea {"
-                                  "   background: transparent;"
-                                  "   border: 1px solid %1;"
-                                  "   border-radius: 14px;"
-                                  "}"
-                                  "QScrollBar:vertical { background: transparent; width: 8px; margin: 0px; }"
-                                  "QScrollBar::handle:vertical { background: %1; border-radius: 4px; min-height: 24px; }"
+                                  "QScrollArea { background: transparent; border: none; }"
+                                  "QScrollBar:vertical { background: transparent; width: 8px; margin: 4px 2px; }"
+                                  "QScrollBar::handle:vertical { background: %1; border-radius: 3px; min-height: 28px; }"
                                   "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
-                                  ).arg(kBorder));
+                                  ).arg(Glass::css(Glass::tokens().stroke)));
     chatScroll->viewport()->setStyleSheet("background: transparent;");
 
     chatBubblesHost = new QWidget(chatScroll);
     chatBubblesHost->setStyleSheet("background: transparent;");
     chatBubblesLayout = new QVBoxLayout(chatBubblesHost);
-    chatBubblesLayout->setContentsMargins(16, 16, 16, 16);
+    chatBubblesLayout->setContentsMargins(18, 18, 18, 18);
     chatBubblesLayout->setSpacing(14);
     chatBubblesLayout->addStretch(1);
+
+    typingRow = new TypingRow(chatBubblesHost);
+    chatBubblesLayout->addWidget(typingRow);
 
     chatScroll->setWidget(chatBubblesHost);
     chatBackdropLayout->addWidget(chatScroll);
     layout->addWidget(chatBackdropContainer, 1);
 
+    connect(chatScroll->verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int v) {
+        if (m_autoScrolling) return;
+        m_stickBottom = v >= chatScroll->verticalScrollBar()->maximum() - 40;
+    });
+
+    // --- чип «думаю…» ---
     thinkingChip = new QFrame(panel);
     thinkingChip->setStyleSheet(QString(
                                     "QFrame {"
-                                    "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 %1, stop:1 %2);"
-                                    "   border-radius: 12px;"
+                                    "   background: %1;"
+                                    "   border: 1px solid %2;"
+                                    "   border-radius: 15px;"
                                     "}"
-                                    ).arg(kBgCard, kBgCardHover));
-    applyElevation(thinkingChip, 18, 3, 55);
+                                    ).arg(Glass::css(Glass::tokens().tintStrong), Glass::css(Glass::tokens().stroke)));
 
     auto *chipLayout = new QHBoxLayout(thinkingChip);
-    chipLayout->setContentsMargins(12, 7, 14, 7);
+    chipLayout->setContentsMargins(14, 7, 16, 7);
     chipLayout->setSpacing(8);
 
     thinkingDot = new QLabel("●", thinkingChip);
@@ -1961,7 +2340,7 @@ QWidget *MainWindow::buildChatArea()
     thinkingChip->setVisible(false);
 
     thinkingFade = new QPropertyAnimation(thinkingOpacity, "opacity", this);
-    thinkingFade->setDuration(220);
+    thinkingFade->setDuration(260);
     thinkingFade->setEasingCurve(QEasingCurve::OutCubic);
 
     thinkingPulse = new QVariantAnimation(this);
@@ -1990,55 +2369,46 @@ QWidget *MainWindow::buildChatArea()
 
     layout->addWidget(thinkingChip, 0, Qt::AlignLeft);
 
-    auto *inputFrame = new QFrame(panel);
-    inputFrame->setStyleSheet(QString(
-                                  "QFrame {"
-                                  "   background-color: %1;"
-                                  "   border: 1px solid %2;"
-                                  "   border-radius: 14px;"
-                                  "}"
-                                  ).arg(kBgInput, kBorder));
-    applyElevation(inputFrame, 20, 4, 45);
-    auto *inputLayout = new QHBoxLayout(inputFrame);
-    inputLayout->setContentsMargins(12, 8, 8, 8);
+    // --- поле ввода: стеклянная капсула с тонким кольцом при фокусе ---
+    inputGlass = new NetworkBackdrop(NetworkBackdrop::Surface::Pill, panel);
+    inputGlowAnim = new QPropertyAnimation(inputGlass, "glow", inputGlass);
+    inputGlowAnim->setDuration(260);
+    inputGlowAnim->setEasingCurve(QEasingCurve::OutCubic);
+
+    auto *inputLayout = new QHBoxLayout(inputGlass);
+    inputLayout->setContentsMargins(18, 9, 9, 9);
     inputLayout->setSpacing(8);
 
-    messageInput = new QPlainTextEdit(inputFrame);
-    messageInput->setFixedHeight(56);
+    messageInput = new QPlainTextEdit(inputGlass);
+    messageInput->setFixedHeight(44);
     messageInput->setFrameShape(QFrame::NoFrame);
     messageInput->setStyleSheet(QString(
                                     "QPlainTextEdit {"
                                     "   background: transparent;"
                                     "   border: none;"
                                     "   color: %1;"
-                                    "   font-size: 13px;"
+                                    "   font-size: 14px;"
+                                    "   padding-top: 4px;"
                                     "}"
                                     ).arg(kTextMain));
+    messageInput->viewport()->setStyleSheet("background: transparent;");
     messageInput->installEventFilter(this);
 
-    sendButton = new QPushButton("➤", inputFrame);
-    sendButton->setFixedSize(40, 40);
-    sendButton->setCursor(Qt::PointingHandCursor);
-    sendButton->setToolTip("Отправить");
-    sendButton->setStyleSheet(QString(
-                                  "QPushButton {"
-                                  "   background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 %1, stop:1 %2);"
-                                  "   color: #ffffff;"
-                                  "   border: none;"
-                                  "   border-radius: 20px;"
-                                  "   font-size: 15px;"
-                                  "   font-weight: bold;"
-                                  "}"
-                                  "QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 %2, stop:1 %1); }"
-                                  "QPushButton:pressed { background: %2; }"
-                                  ).arg(kAccent, kAccent2));
-    applyElevation(sendButton, 16, 3, 70);
+    auto *send = new SendButton(inputGlass);
+    sendButton = send;
     connect(sendButton, &QPushButton::clicked, this, &MainWindow::handleSendClicked);
+
+    connect(messageInput, &QPlainTextEdit::textChanged, this, [this, send]() {
+        send->setReady(!messageInput->toPlainText().trimmed().isEmpty());
+        const int lines = qMax(1, int(messageInput->document()->size().height()));
+        const int lineH = QFontMetrics(messageInput->font()).lineSpacing() + 2;
+        messageInput->setFixedHeight(qBound(44, lines * lineH + 16, 150));
+    });
 
     inputLayout->addWidget(messageInput, 1);
     inputLayout->addWidget(sendButton, 0, Qt::AlignBottom);
 
-    layout->addWidget(inputFrame);
+    layout->addWidget(inputGlass);
 
     return panel;
 }
@@ -2131,7 +2501,24 @@ SubagentCard *MainWindow::createCardWidget(const QString &id, const QString &nam
     });
     connect(card, &SubagentCard::enabledToggled, this, [this](const QString &cardId, bool enabled) {
         m_agentEnabled.insert(cardId, enabled);
+        if (cardId == m_activeAgentId)
+            updateTypingIndicator();
     });
+
+    // плавное появление карточки
+    auto *effect = new QGraphicsOpacityEffect(card);
+    effect->setOpacity(0.0);
+    card->setGraphicsEffect(effect);
+    auto *fade = new QPropertyAnimation(effect, "opacity", card);
+    fade->setDuration(380);
+    fade->setStartValue(0.0);
+    fade->setEndValue(1.0);
+    fade->setEasingCurve(QEasingCurve::OutCubic);
+    QPointer<SubagentCard> guard(card);
+    connect(fade, &QPropertyAnimation::finished, card, [guard]() {
+        if (guard) guard->setGraphicsEffect(nullptr);
+    });
+    fade->start(QAbstractAnimation::DeleteWhenStopped);
 
     return card;
 }
@@ -2162,6 +2549,7 @@ void MainWindow::removeSubagent(const QString &id)
         m_histories.remove(id);
         m_agentFolderNames.remove(id);
         m_agentEnabled.remove(id);
+        m_pending.remove(id);
         subagentCountLabel->setText(QString::number(m_cards.size()));
         if (m_activeAgentId == id)
             selectMainAgent();
@@ -2174,7 +2562,7 @@ void MainWindow::toggleAgentListCollapsed()
 
     const int targetWidth = m_agentListCollapsed ? kSidebarCollapsedWidth : kSidebarExpandedWidth;
     auto *anim = new QVariantAnimation(this);
-    anim->setDuration(240);
+    anim->setDuration(320);
     anim->setStartValue(sidebarPanel->width());
     anim->setEndValue(targetWidth);
     anim->setEasingCurve(QEasingCurve::OutCubic);
@@ -2253,12 +2641,19 @@ QStringList MainWindow::subagentIds() const { return m_cards.keys(); }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
-    if (watched == messageInput && event->type() == QEvent::KeyPress) {
-        auto *keyEvent = static_cast<QKeyEvent *>(event);
-        if ((keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter)
-            && !(keyEvent->modifiers() & Qt::ShiftModifier)) {
-            handleSendClicked();
-            return true;
+    if (watched == messageInput) {
+        if (event->type() == QEvent::KeyPress) {
+            auto *keyEvent = static_cast<QKeyEvent *>(event);
+            if ((keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter)
+                && !(keyEvent->modifiers() & Qt::ShiftModifier)) {
+                handleSendClicked();
+                return true;
+            }
+        } else if ((event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut) && inputGlowAnim) {
+            inputGlowAnim->stop();
+            inputGlowAnim->setStartValue(inputGlass->glow());
+            inputGlowAnim->setEndValue(event->type() == QEvent::FocusIn ? 1.0 : 0.0);
+            inputGlowAnim->start();
         }
     }
     return QMainWindow::eventFilter(watched, event);
@@ -2274,6 +2669,7 @@ void MainWindow::selectMainAgent()
     chatHeaderAvatar->setAgentName(m_mainAgentName);
     refreshComposerPlaceholder();
     redrawActiveHistory();
+    updateTypingIndicator();
     showMainView();
     emit mainAgentSelected();
 }
@@ -2290,6 +2686,7 @@ void MainWindow::selectSubagent(const QString &id)
     chatHeaderAvatar->setAgentName(target->name());
     refreshComposerPlaceholder();
     redrawActiveHistory();
+    updateTypingIndicator();
     showMainView();
     emit subagentSelected(id);
 }
@@ -2306,44 +2703,109 @@ void MainWindow::appendHistory(const QString &agentId, const QString &text, bool
     ChatEntry entry{text, isUser, QDateTime::currentDateTime().toString("hh:mm"), code};
     m_histories[agentId].append(entry);
     if (agentId == m_activeAgentId)
-        renderMessage(entry);
+        renderMessage(entry, true);
 }
 
-void MainWindow::renderMessage(const ChatEntry &entry)
+void MainWindow::renderMessage(const ChatEntry &entry, bool animate)
 {
     const QString author = entry.isUser
                                ? "Вы"
                                : (m_activeAgentId.isEmpty() ? m_mainAgentName : subagentName(m_activeAgentId));
 
-    auto *bubble = new ChatBubble(author, entry.text, entry.time, entry.isUser, entry.code, chatBubblesHost);
-    chatBubblesLayout->addWidget(bubble);
-    bubble->playEntrance();
+    auto *bubble = new ChatBubble(author, entry.text, entry.time, entry.isUser, entry.code,
+                                  animate && !entry.isUser,
+                                  [this]() { if (m_stickBottom) scrollChatToBottom(false); },
+                                  chatBubblesHost);
+    // перед индикатором набора (он всегда последний)
+    chatBubblesLayout->insertWidget(chatBubblesLayout->count() - 1, bubble);
+    if (animate)
+        bubble->playEntrance();
 
-    QTimer::singleShot(0, this, [this]() {
-        QScrollBar *bar = chatScroll->verticalScrollBar();
+    if (m_stickBottom)
+        QTimer::singleShot(0, this, [this, animate]() { scrollChatToBottom(animate); });
+}
+
+void MainWindow::scrollChatToBottom(bool smooth)
+{
+    if (!chatScroll) return;
+    QScrollBar *bar = chatScroll->verticalScrollBar();
+
+    if (!smooth) {
         bar->setValue(bar->maximum());
+        return;
+    }
+
+    if (m_scrollAnim)
+        m_scrollAnim->stop();
+
+    auto *anim = new QPropertyAnimation(bar, "value", this);
+    anim->setDuration(380);
+    anim->setStartValue(bar->value());
+    anim->setEndValue(bar->maximum());
+    anim->setEasingCurve(QEasingCurve::OutCubic);
+    m_autoScrolling = true;
+    connect(anim, &QPropertyAnimation::finished, this, [this]() {
+        m_autoScrolling = false;
+        m_stickBottom = true;
     });
+    m_scrollAnim = anim;
+    anim->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
 void MainWindow::redrawActiveHistory()
 {
-    while (chatBubblesLayout->count() > 1) {
+    // [stretch, пузыри..., typingRow] — удаляем только пузыри
+    while (chatBubblesLayout->count() > 2) {
         QLayoutItem *item = chatBubblesLayout->takeAt(1);
         delete item->widget();
         delete item;
     }
 
+    m_stickBottom = true;
     const auto entries = m_histories.value(m_activeAgentId);
     for (const auto &entry : entries)
-        renderMessage(entry);
+        renderMessage(entry, false);
+
+    QTimer::singleShot(0, this, [this]() { scrollChatToBottom(false); });
 }
 
+void MainWindow::updateTypingIndicator()
+{
+    if (!typingRow) return;
+
+    const bool on = m_pending.contains(m_activeAgentId)
+                    && (m_activeAgentId.isEmpty() || m_agentEnabled.value(m_activeAgentId, true));
+    auto *row = static_cast<TypingRow *>(typingRow);
+    row->setAgentName(m_activeAgentId.isEmpty() ? m_mainAgentName : subagentName(m_activeAgentId));
+    row->setActive(on);
+
+    if (chatHeaderSub) {
+        const bool enabled = m_activeAgentId.isEmpty() || m_agentEnabled.value(m_activeAgentId, true);
+        if (on) {
+            chatHeaderSub->setText("печатает…");
+            chatHeaderSub->setStyleSheet(QString("color: %1; font-size: 11px; border: none; background: transparent;").arg(kAccent));
+        } else if (!enabled) {
+            chatHeaderSub->setText("● выключен");
+            chatHeaderSub->setStyleSheet(QString("color: %1; font-size: 11px; border: none; background: transparent;").arg(kTextMuted));
+        } else {
+            chatHeaderSub->setText("● в сети");
+            chatHeaderSub->setStyleSheet(QString("color: %1; font-size: 11px; border: none; background: transparent;").arg(kAccentGreen));
+        }
+    }
+
+    if (on && m_stickBottom)
+        QTimer::singleShot(0, this, [this]() { scrollChatToBottom(true); });
+}
+
+// ===========================================================================
+// Диалоги агента
+// ===========================================================================
 MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString &title, const QString &backendAgentName, QString &name, QString &role, bool allowDelete)
 {
     QDialog dialog(this);
     dialog.setWindowTitle(title);
-    dialog.setMinimumWidth(560);
-    dialog.setMinimumHeight(520);
+    dialog.setMinimumWidth(580);
+    dialog.setMinimumHeight(540);
     dialog.setStyleSheet(QString(
                              "QDialog { background-color: %1; }"
                              "QLabel { color: %2; font-size: 12px; border: none; background: transparent; }"
@@ -2351,28 +2813,102 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
                              "   background-color: %3;"
                              "   color: %2;"
                              "   border: 1px solid %4;"
-                             "   border-radius: 8px;"
+                             "   border-radius: 12px;"
                              "   padding: 8px;"
                              "   font-size: 13px;"
                              "}"
                              "QLineEdit:focus, QTextEdit:focus { border-color: %5; }"
-                             "QTabWidget::pane { border: 1px solid %4; border-radius: 8px; }"
-                             "QTabBar::tab { background-color: %3; color: %2; padding: 6px 12px; }"
+                             "QTabWidget::pane { border: 1px solid %4; border-radius: 12px; }"
+                             "QTabBar::tab { background-color: %3; color: %2; padding: 6px 14px; border-radius: 8px; margin: 2px; }"
                              "QTabBar::tab:selected { color: %5; }"
                              "QPushButton {"
                              "   background-color: %3;"
                              "   color: %2;"
                              "   border: 1px solid %4;"
-                             "   border-radius: 8px;"
-                             "   padding: 6px 16px;"
+                             "   border-radius: 12px;"
+                             "   padding: 6px 18px;"
                              "   font-size: 13px;"
                              "}"
                              "QPushButton:hover { border-color: %5; color: %5; }"
                              ).arg(kBgWindow, kTextMain, kBgCard, kBorder, kAccent));
 
     auto *layout = new QVBoxLayout(&dialog);
-    layout->setContentsMargins(20, 20, 20, 20);
-    layout->setSpacing(10);
+    layout->setContentsMargins(20, 14, 20, 16);
+    layout->setSpacing(8);
+
+    // Переключатель страниц General / Services — сегмент-контрол как в iOS
+    constexpr int kSwH = 36, kSwPad = 3;
+    constexpr int kItemH = kSwH - kSwPad * 2;
+
+    struct SwitchBar : QWidget {
+        std::function<void()> onResize;
+        using QWidget::QWidget;
+        void resizeEvent(QResizeEvent *e) override {
+            QWidget::resizeEvent(e);
+            if (onResize) onResize();
+        }
+    };
+
+    const auto &gt = Glass::tokens();
+    auto *pageSwitch = new SwitchBar(&dialog);
+    pageSwitch->setObjectName("cyberSwitch");
+    pageSwitch->setAttribute(Qt::WA_StyledBackground, true);
+    pageSwitch->setFixedHeight(kSwH);
+    pageSwitch->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    pageSwitch->setStyleSheet(QString(
+                                  "#cyberSwitch { background: %1; border: 1px solid %2; border-radius: 18px; }"
+                                  "#cyberHighlight {"
+                                  "   border-radius: 15px;"
+                                  "   border: 1px solid %2;"
+                                  "   background: %3;"
+                                  "}"
+                                  "#cyberSwitch QPushButton {"
+                                  "   background: transparent; border: none; border-radius: 15px; padding: 0;"
+                                  "   color: %4; font-size: 12px; font-weight: 600; outline: none;"
+                                  "}"
+                                  "#cyberSwitch QPushButton:hover { color: %5; }"
+                                  "#cyberSwitch QPushButton:checked { color: %5; }")
+                                  .arg(Glass::css(gt.tint), Glass::css(gt.stroke),
+                                       Glass::css(gt.tintStrong),
+                                       kTextMuted, kTextMain));
+
+    auto *highlight = new QFrame(pageSwitch);
+    highlight->setObjectName("cyberHighlight");
+    highlight->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    highlight->setGeometry(kSwPad, kSwPad, 1, kItemH);
+
+    auto *switchGroup = new QButtonGroup(pageSwitch);
+    const QStringList switchTexts = {"General", "Services"};
+    QList<QPushButton *> switchButtons;
+    for (int i = 0; i < 2; ++i) {
+        auto *btn = new QPushButton(switchTexts[i], pageSwitch);
+        btn->setCheckable(true);
+        btn->setCursor(Qt::PointingHandCursor);
+        btn->setFocusPolicy(Qt::TabFocus);
+        switchGroup->addButton(btn, i);
+        switchButtons.append(btn);
+    }
+    switchButtons[0]->setChecked(true);
+
+    auto *slide = new QPropertyAnimation(highlight, "pos", pageSwitch);
+    slide->setDuration(260);
+    slide->setEasingCurve(QEasingCurve::OutCubic);
+
+    pageSwitch->onResize = [=, this]() {
+        const int itemW = (pageSwitch->width() - kSwPad * 2) / 2;
+        for (int i = 0; i < 2; ++i)
+            switchButtons[i]->setGeometry(kSwPad + i * itemW, kSwPad, itemW, kItemH);
+        slide->stop();
+        highlight->setGeometry(kSwPad + qMax(0, switchGroup->checkedId()) * itemW, kSwPad, itemW, kItemH);
+    };
+
+    auto *pages = new QStackedWidget(&dialog);
+
+    // --- General ---
+    auto *generalPage = new QWidget(pages);
+    auto *generalLayout = new QVBoxLayout(generalPage);
+    generalLayout->setContentsMargins(0, 0, 0, 0);
+    generalLayout->setSpacing(6);
 
     auto *nameLabel = new QLabel("Имя", &dialog);
     auto *nameEdit = new QLineEdit(name, &dialog);
@@ -2400,6 +2936,248 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
         promptEdits.insert(part.first, edit);
     }
 
+    generalLayout->addWidget(nameLabel);
+    generalLayout->addWidget(nameEdit);
+    generalLayout->addWidget(roleLabel);
+    generalLayout->addWidget(roleEdit);
+    generalLayout->addWidget(promptLabel);
+    generalLayout->addWidget(promptTabs, 1);
+
+    // --- Services ---
+    auto *servicesPage = new QWidget(pages);
+    auto *servicesLayout = new QVBoxLayout(servicesPage);
+    servicesLayout->setContentsMargins(0, 0, 0, 0);
+    servicesLayout->setSpacing(6);
+
+    struct ServiceDef { QString id; QString name; };
+    static const QList<ServiceDef> kServices = {
+                                                {"instagram", "Instagram"},
+                                                {"telegram",  "Telegram"},
+                                                {"whatsapp",  "WhatsApp"},
+                                                {"discord",   "Discord"},
+                                                };
+
+    // service id -> (поле -> значение). Заполняется через диалог "...".
+    // TODO: подгружать/сохранять через m_agentManager вместо локальной мапы.
+    auto serviceCreds = QSharedPointer<QMap<QString, QMap<QString, QString>>>::create();
+    auto serviceToggles = QSharedPointer<QMap<QString, ToggleSwitch *>>::create();
+
+    const QString dotsStyle = QString(
+                                  "QPushButton {"
+                                  "   background: transparent; border: none; color: %1;"
+                                  "   font-size: 18px; font-weight: 700; padding: 0 4px;"
+                                  "}"
+                                  "QPushButton:hover { color: %2; }"
+                                  ).arg(kTextMain, kAccent);
+
+    for (const auto &svc : kServices) {
+        auto *row = new QWidget(servicesPage);
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(4, 4, 4, 4);
+        rowLayout->setSpacing(8);
+
+        auto *label = new QLabel(svc.name, row);
+
+        auto *toggle = new ToggleSwitch(row);
+        serviceToggles->insert(svc.id, toggle);
+
+        auto *dotsButton = new QPushButton(QString::fromUtf8("\xE2\x8B\xAF"), row); // ⋯
+        dotsButton->setStyleSheet(dotsStyle);
+        dotsButton->setCursor(Qt::PointingHandCursor);
+        dotsButton->setFixedSize(28, 28);
+
+        rowLayout->addWidget(label);
+        rowLayout->addStretch(1);
+        rowLayout->addWidget(toggle);
+        rowLayout->addWidget(dotsButton);
+        servicesLayout->addWidget(row);
+
+        connect(dotsButton, &QPushButton::clicked, &dialog, [this, &dialog, svc, serviceCreds]() {
+            QDialog credsDialog(&dialog);
+            credsDialog.setWindowTitle(svc.name);
+            credsDialog.setMinimumWidth(340);
+
+            auto *form = new QFormLayout(&credsDialog);
+            form->setContentsMargins(16, 16, 16, 16);
+            form->setSpacing(8);
+
+            QMap<QString, QLineEdit *> fields;
+            auto addField = [&](const QString &key, const QString &labelText, bool password = false) {
+                auto *edit = new QLineEdit((*serviceCreds)[svc.id].value(key), &credsDialog);
+                if (password)
+                    edit->setEchoMode(QLineEdit::Password);
+                form->addRow(labelText, edit);
+                fields.insert(key, edit);
+            };
+
+            if (svc.id == "telegram") {
+                addField("api_id", "API ID");
+                addField("api_hash", "API Hash", true);
+                addField("phone", "Номер телефону");
+
+                auto *connectTelegramButton =
+                    new QPushButton("Підключити Telegram", &credsDialog);
+
+                connectTelegramButton->setCursor(Qt::PointingHandCursor);
+                form->addRow(QString(), connectTelegramButton);
+
+                connect(connectTelegramButton,
+                        &QPushButton::clicked,
+                        &credsDialog,
+                        [this, &fields, svc, serviceCreds]() {
+                            const QString apiIdText =
+                                fields.value("api_id")->text().trimmed();
+
+                            const QString apiHash =
+                                fields.value("api_hash")->text().trimmed();
+
+                            const QString phone =
+                                fields.value("phone")->text().trimmed();
+
+                            bool ok = false;
+                            const qint32 apiId =
+                                apiIdText.toInt(&ok);
+
+                            if (!ok || apiId <= 0) {
+                                QMessageBox::warning(
+                                    this,
+                                    "Telegram",
+                                    "API ID має бути додатним числом.");
+                                return;
+                            }
+
+                            if (apiHash.isEmpty()) {
+                                QMessageBox::warning(
+                                    this,
+                                    "Telegram",
+                                    "API Hash не може бути порожнім.");
+                                return;
+                            }
+
+                            if (phone.isEmpty()) {
+                                QMessageBox::warning(
+                                    this,
+                                    "Telegram",
+                                    "Номер телефону не може бути порожнім.");
+                                return;
+                            }
+
+                            (*serviceCreds)[svc.id]["api_id"] = apiIdText;
+                            (*serviceCreds)[svc.id]["api_hash"] = apiHash;
+                            (*serviceCreds)[svc.id]["phone"] = phone;
+
+                            if (m_telegramAccountClient) {
+                                m_telegramAccountClient->deleteLater();
+                                m_telegramAccountClient = nullptr;
+                            }
+
+                            QString accountName = m_mainAgentName;
+
+                            if (!m_activeAgentId.isEmpty()) {
+                                const QString selectedName =
+                                    subagentName(m_activeAgentId);
+
+                                if (!selectedName.trimmed().isEmpty())
+                                    accountName = selectedName;
+                            }
+
+                            QString safeAccountName = accountName;
+
+                            safeAccountName.replace(
+                                QRegularExpression("[^A-Za-zА-Яа-яЇїІіЄєҐґ0-9_-]"),
+                                "_");
+
+                            if (safeAccountName.isEmpty())
+                                safeAccountName = "default_agent";
+
+                            const QString sessionsRoot =
+                                QCoreApplication::applicationDirPath()
+                                + "/sessions";
+
+                            const QString sessionDirectory =
+                                sessionsRoot + "/" + safeAccountName;
+
+                            if (!QDir().mkpath(sessionDirectory)) {
+                                QMessageBox::critical(
+                                    this,
+                                    "Telegram",
+                                    "Не вдалося створити папку сесії:\n"
+                                        + sessionDirectory);
+                                return;
+                            }
+
+                            m_telegramAccountClient =
+                                new TelegramAccountClient(this, this);
+
+                            connect(m_telegramAccountClient,
+                                    &TelegramAccountClient::statusChanged,
+                                    this,
+                                    [this](const QString &status) {
+                                        statusBar()->showMessage(status, 10000);
+                                    });
+
+                            connect(m_telegramAccountClient,
+                                    &TelegramAccountClient::authorizationReady,
+                                    this,
+                                    [this, accountName]() {
+                                        QMessageBox::information(
+                                            this,
+                                            "Telegram",
+                                            QString("Акаунт для «%1» успішно підключено.")
+                                                .arg(accountName));
+                                    });
+
+                            connect(m_telegramAccountClient,
+                                    &TelegramAccountClient::authorizationError,
+                                    this,
+                                    [this](const QString &message) {
+                                        QMessageBox::critical(
+                                            this,
+                                            "Помилка Telegram",
+                                            message);
+                                    });
+
+                            m_telegramAccountClient->startAuthorization(
+                                apiId,
+                                apiHash,
+                                phone,
+                                sessionDirectory);
+                        });
+            } else {
+                // TODO: заміни на поля, потрібні саме цьому сервісу
+                addField("login", "Логін / токен");
+                addField("password", "Пароль", true);
+            }
+
+            auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &credsDialog);
+            buttons->button(QDialogButtonBox::Save)->setText("Сохранить");
+            buttons->button(QDialogButtonBox::Cancel)->setText("Отмена");
+            connect(buttons, &QDialogButtonBox::accepted, &credsDialog, &QDialog::accept);
+            connect(buttons, &QDialogButtonBox::rejected, &credsDialog, &QDialog::reject);
+            form->addRow(buttons);
+
+            if (credsDialog.exec() == QDialog::Accepted) {
+                for (auto it = fields.constBegin(); it != fields.constEnd(); ++it)
+                    (*serviceCreds)[svc.id][it.key()] = it.value()->text();
+            }
+        });
+    }
+
+    servicesLayout->addStretch(1);
+
+    pages->addWidget(generalPage);
+    pages->addWidget(servicesPage);
+    for (int i = 0; i < 2; ++i) {
+        connect(switchButtons[i], &QPushButton::clicked, pageSwitch, [=, this]() {
+            const int itemW = (pageSwitch->width() - kSwPad * 2) / 2;
+            slide->stop();
+            slide->setStartValue(highlight->pos());
+            slide->setEndValue(QPoint(kSwPad + i * itemW, kSwPad));
+            slide->start();
+            pages->setCurrentIndex(i);
+        });
+    }
+
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
     buttons->button(QDialogButtonBox::Save)->setText("Сохранить");
     buttons->button(QDialogButtonBox::Cancel)->setText("Отмена");
@@ -2409,9 +3187,9 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
     if (allowDelete) {
         auto *deleteButton = new QPushButton("Удалить агента", &dialog);
         deleteButton->setStyleSheet(QString(
-                                        "QPushButton { color: %1; border: 1px solid %1; border-radius: 8px; padding: 6px 16px; background: transparent; }"
-                                        "QPushButton:hover { background: rgba(243, 139, 168, 0.15); }"
-                                        ).arg(kAccentRed));
+                                        "QPushButton { color: %1; border: 1px solid %1; border-radius: 12px; padding: 6px 16px; background: transparent; }"
+                                        "QPushButton:hover { background: %2; }"
+                                        ).arg(kAccentRed, Glass::css(Glass::withAlpha(QColor(kAccentRed), 40))));
         connect(deleteButton, &QPushButton::clicked, &dialog, [&dialog]() {
             if (QMessageBox::question(&dialog, "Удалить агента",
                                       "Удалить этого агента? Файлы агента будут удалены с диска.") == QMessageBox::Yes)
@@ -2420,12 +3198,8 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
         buttons->addButton(deleteButton, QDialogButtonBox::DestructiveRole);
     }
 
-    layout->addWidget(nameLabel);
-    layout->addWidget(nameEdit);
-    layout->addWidget(roleLabel);
-    layout->addWidget(roleEdit);
-    layout->addWidget(promptLabel);
-    layout->addWidget(promptTabs, 1);
+    layout->addWidget(pageSwitch);
+    layout->addWidget(pages, 1);
     layout->addWidget(buttons);
 
     const int result = dialog.exec();
@@ -2440,9 +3214,17 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
     for (auto it = promptEdits.constBegin(); it != promptEdits.constEnd(); ++it)
         m_agentManager->editFile(backendAgentName, it.value()->toPlainText(), it.key());
 
+    // TODO: тут же сохрани выбор сервисов и данные подключения, например:
+    // for (auto it = serviceToggles->constBegin(); it != serviceToggles->constEnd(); ++it)
+    //     if (it.value()->isChecked())
+    //         m_agentManager->connectService(backendAgentName, it.key(), (*serviceCreds)[it.key()]);
+
     return AgentSettingsResult::Saved;
 }
 
+// ===========================================================================
+// Фон / тема / API
+// ===========================================================================
 void MainWindow::openBackgroundPicker()
 {
     const QString path = QFileDialog::getOpenFileName(
@@ -2477,7 +3259,7 @@ void MainWindow::openThemeCreator(const QString &themeId)
     dialog.setStyleSheet(QString(
                              "QDialog { background-color: %1; }"
                              "QLabel { color: %2; font-size: 12px; border: none; background: transparent; }"
-                             "QPushButton { border: 1px solid %3; border-radius: 8px; padding: 6px 16px; color: %2; background-color: %4; }"
+                             "QPushButton { border: 1px solid %3; border-radius: 12px; padding: 6px 16px; color: %2; background-color: %4; }"
                              "QPushButton:hover { border-color: %5; }"
                              ).arg(kBgWindow, kTextMain, kBorder, kBgCard, kAccent));
 
@@ -2512,7 +3294,7 @@ void MainWindow::openThemeCreator(const QString &themeId)
         swatch->setCursor(Qt::PointingHandCursor);
 
         auto refreshSwatch = [swatch, &colors, key]() {
-            swatch->setStyleSheet(QString("background-color: %1; border: 1px solid rgba(128,128,128,0.4); border-radius: 8px;")
+            swatch->setStyleSheet(QString("background-color: %1; border: 1px solid rgba(128,128,128,0.4); border-radius: 14px;")
                                       .arg(colors[key].name()));
         };
         refreshSwatch();
@@ -2551,7 +3333,6 @@ void MainWindow::openThemeCreator(const QString &themeId)
 
     rebuildUiLive();
 }
-
 void MainWindow::openAppSettings()
 {
     QSettings settings(QString(APP_SRC_DIR) + "/config.ini", QSettings::IniFormat);
@@ -2566,7 +3347,7 @@ void MainWindow::openAppSettings()
                              "   background-color: %3;"
                              "   color: %2;"
                              "   border: 1px solid %4;"
-                             "   border-radius: 8px;"
+                             "   border-radius: 12px;"
                              "   padding: 8px;"
                              "   font-size: 13px;"
                              "}"
@@ -2576,11 +3357,17 @@ void MainWindow::openAppSettings()
                              "   background-color: %3;"
                              "   color: %2;"
                              "   border: 1px solid %4;"
-                             "   border-radius: 8px;"
-                             "   padding: 6px 16px;"
+                             "   border-radius: 12px;"
+                             "   padding: 6px 18px;"
                              "   font-size: 13px;"
                              "}"
                              "QPushButton:hover { border-color: %5; color: %5; }"
+                             "QComboBox {"
+                             "   background-color: %3; color: %2; border: 1px solid %4;"
+                             "   border-radius: 12px; padding: 8px; font-size: 13px;"
+                             "}"
+                             "QComboBox:focus { border-color: %5; }"
+                             "QComboBox QAbstractItemView { background-color: %3; color: %2; selection-background-color: %5; }"
                              ).arg(kBgWindow, kTextMain, kBgCard, kBorder, kAccent));
 
     auto *layout = new QVBoxLayout(&dialog);
@@ -2592,15 +3379,28 @@ void MainWindow::openAppSettings()
     tokenEdit->setPlaceholderText("123456789:AAExampleTokenValue");
     tokenEdit->setEchoMode(QLineEdit::Password);
 
-    auto *geminiLabel = new QLabel("Gemini API Key", &dialog);
-    auto *geminiEdit = new QLineEdit(settings.value("gemini_api_key").toString(), &dialog);
-    geminiEdit->setPlaceholderText("AIzaExampleKeyValue");
-    geminiEdit->setEchoMode(QLineEdit::Password);
+    auto *orKeyLabel = new QLabel("OpenRouter API Key", &dialog);
+    auto *orKeyEdit = new QLineEdit(settings.value("openrouter_api_key").toString(), &dialog);
+    orKeyEdit->setPlaceholderText("sk-or-v1-...");
+    orKeyEdit->setEchoMode(QLineEdit::Password);
+
+    auto *modelLabel = new QLabel("Модель (OpenRouter)", &dialog);
+    auto *modelBox = new QComboBox(&dialog);
+    modelBox->setEditable(true);
+    modelBox->addItems({
+        "openai/gpt-4o-mini",
+        "anthropic/claude-sonnet-4.5",
+        "google/gemini-2.5-flash",
+        "deepseek/deepseek-chat",
+        "meta-llama/llama-3.3-70b-instruct"
+    });
+    modelBox->setCurrentText(settings.value("ai_model", "openai/gpt-4o-mini").toString());
 
     auto *showCheckbox = new QCheckBox("Показать значения", &dialog);
-    connect(showCheckbox, &QCheckBox::toggled, &dialog, [tokenEdit, geminiEdit](bool checked) {
-        tokenEdit->setEchoMode(checked ? QLineEdit::Normal : QLineEdit::Password);
-        geminiEdit->setEchoMode(checked ? QLineEdit::Normal : QLineEdit::Password);
+    connect(showCheckbox, &QCheckBox::toggled, &dialog, [tokenEdit, orKeyEdit](bool checked) {
+        const auto mode = checked ? QLineEdit::Normal : QLineEdit::Password;
+        tokenEdit->setEchoMode(mode);
+        orKeyEdit->setEchoMode(mode);
     });
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
@@ -2611,8 +3411,10 @@ void MainWindow::openAppSettings()
 
     layout->addWidget(tokenLabel);
     layout->addWidget(tokenEdit);
-    layout->addWidget(geminiLabel);
-    layout->addWidget(geminiEdit);
+    layout->addWidget(orKeyLabel);
+    layout->addWidget(orKeyEdit);
+    layout->addWidget(modelLabel);
+    layout->addWidget(modelBox);
     layout->addWidget(showCheckbox);
     layout->addWidget(buttons);
 
@@ -2620,15 +3422,24 @@ void MainWindow::openAppSettings()
         return;
 
     const QString botToken = tokenEdit->text().trimmed();
-    const QString geminiApiKey = geminiEdit->text().trimmed();
+    const QString aiKey = orKeyEdit->text().trimmed();
+    const QString aiModel = modelBox->currentText().trimmed();
 
     settings.setValue("telegram_token", botToken);
-    settings.setValue("gemini_api_key", geminiApiKey);
+    settings.setValue("openrouter_api_key", aiKey);
+    if (!aiModel.isEmpty())
+        settings.setValue("ai_model", aiModel);
+    // старые ключи больше не нужны
+    settings.remove("cf_account_id");
+    settings.remove("cf_api_token");
+    settings.remove("groq_api_key");
+    settings.remove("gemini_api_key");
 
     emit appTelegramTokenChanged(botToken);
-    emit appGeminiTokenChanged(geminiApiKey);
+    emit appAiKeyChanged(aiKey);
+    if (!aiModel.isEmpty())
+        emit appAiModelChanged(aiModel);
 }
-
 void MainWindow::openMainAgentSettings()
 {
     const QString oldBackendName = m_agentFolderNames.value(QString(), m_mainAgentName);
@@ -2694,11 +3505,16 @@ void MainWindow::openSubagentSettings(const QString &id)
     emit subagentRoleChanged(id, role);
 }
 
+// ===========================================================================
+// Отправка / ответы
+// ===========================================================================
 void MainWindow::handleSendClicked()
 {
     const QString text = messageInput->toPlainText().trimmed();
     if (text.isEmpty())
         return;
+
+    m_stickBottom = true;
 
     const bool enabled = m_activeAgentId.isEmpty() || m_agentEnabled.value(m_activeAgentId, true);
     if (!enabled) {
@@ -2712,6 +3528,15 @@ void MainWindow::handleSendClicked()
 
     const QString backendName = m_agentFolderNames.value(m_activeAgentId, m_mainAgentName);
     const qint64 chatId = uiChatIdFor(m_activeAgentId);
+
+    // индикатор «печатает…» до прихода ответа (страховка — 90 секунд)
+    const QString pendingId = m_activeAgentId;
+    m_pending.insert(pendingId);
+    updateTypingIndicator();
+    QTimer::singleShot(90000, this, [this, pendingId]() {
+        if (m_pending.remove(pendingId))
+            updateTypingIndicator();
+    });
 
     m_agentManager->reqAgent(text, chatId, backendName, MessageSource::UI);
 
@@ -2727,9 +3552,9 @@ void MainWindow::receiveAgentReply(const QString &agentId, const QString &text, 
 void MainWindow::updateUptime()
 {
     const qint64 secs = startTime.elapsed() / 1000;
-    const int hours = secs / 3600;
-    const int mins = (secs % 3600) / 60;
-    const int seconds = secs % 60;
+    const int hours = int(secs / 3600);
+    const int mins = int((secs % 3600) / 60);
+    const int seconds = int(secs % 60);
     if (uptimeLabel) {
         uptimeLabel->setText(QString("%1:%2:%3")
                                  .arg(hours, 2, 10, QChar('0'))
@@ -2738,15 +3563,17 @@ void MainWindow::updateUptime()
     }
 }
 
-// ИСПРАВЛЕННАЯ ВЕРСИЯ: buildCodePanel с setFixedWidth
+// ===========================================================================
+// Панель кода (с эффектом «печати»)
+// ===========================================================================
 QWidget *MainWindow::buildCodePanel()
 {
     auto *panel = new NetworkBackdrop(NetworkBackdrop::Surface::Panel, this);
     codePanelContainer = panel;
-    panel->setFixedWidth(0);  // ← используем setFixedWidth вместо setMaximumWidth
+    panel->setFixedWidth(0);
 
     auto *layout = new QVBoxLayout(panel);
-    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setContentsMargins(23, 23, 23, 23);
     layout->setSpacing(10);
 
     auto *headerRow = new QHBoxLayout();
@@ -2760,7 +3587,7 @@ QWidget *MainWindow::buildCodePanel()
     auto *copyBtn = new AnimatedIconButton("⧉", kTextMuted, kAccent, panel);
     copyBtn->setFixedSize(28, 28);
     copyBtn->setToolTip("Скопировать код");
-    copyBtn->setStyleSheet(iconButtonStyle(kAccent, "rgba(137, 180, 250, 0.15)"));
+    copyBtn->setStyleSheet(iconButtonStyle(kAccent, 12, 14));
     connect(copyBtn, &QPushButton::clicked, this, [this]() {
         QGuiApplication::clipboard()->setText(codePanelBody->toPlainText());
     });
@@ -2768,7 +3595,7 @@ QWidget *MainWindow::buildCodePanel()
     auto *closeBtn = new AnimatedIconButton("✕", kTextMuted, kAccentRed, panel);
     closeBtn->setFixedSize(28, 28);
     closeBtn->setToolTip("Закрыть панель кода");
-    closeBtn->setStyleSheet(iconButtonStyle(kAccentRed, "rgba(243, 139, 168, 0.15)"));
+    closeBtn->setStyleSheet(iconButtonStyle(kAccentRed, 12, 14));
     connect(closeBtn, &QPushButton::clicked, this, &MainWindow::hideCodePanel);
 
     headerRow->addWidget(codePanelTitle, 1);
@@ -2782,19 +3609,19 @@ QWidget *MainWindow::buildCodePanel()
     codePanelBody->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     codePanelBody->setStyleSheet(QString(
                                      "QPlainTextEdit {"
-                                     "   background-color: %1;"
-                                     "   color: %2;"
-                                     "   border: 1px solid %3;"
-                                     "   border-radius: 10px;"
-                                     "   padding: 10px;"
+                                     "   background-color: rgba(0,0,0,%4);"
+                                     "   color: %1;"
+                                     "   border: 1px solid %2;"
+                                     "   border-radius: 16px;"
+                                     "   padding: 12px;"
                                      "   font-size: 12px;"
                                      "}"
                                      "QScrollBar:vertical { background: transparent; width: 8px; margin: 0px; }"
-                                     "QScrollBar::handle:vertical { background: %3; border-radius: 4px; min-height: 24px; }"
-                                     ).arg(kBgWindow, kTextMain, kBorder));
+                                     "QScrollBar::handle:vertical { background: %2; border-radius: 4px; min-height: 24px; }"
+                                     "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
+                                     ).arg(kTextMain, Glass::css(Glass::tokens().stroke)).arg(Glass::tokens().dark ? 90 : 18));
     layout->addWidget(codePanelBody, 1);
 
-    // Мигающий курсор в конце "печатаемого" текста — усиливает эффект живой печати
     codeTypewriterCursorBlink = new QTimer(this);
     codeTypewriterCursorBlink->setInterval(430);
     connect(codeTypewriterCursorBlink, &QTimer::timeout, this, [this]() {
@@ -2805,12 +3632,10 @@ QWidget *MainWindow::buildCodePanel()
     return panel;
 }
 
-// ИСПРАВЛЕННАЯ ВЕРСИЯ: showCodePanel — теперь код "печатается" быстро, как будто его набирает ИИ
 void MainWindow::showCodePanel(const QString &code, const QString &title)
 {
     codePanelTitle->setText(title.isEmpty() ? "Код" : title);
 
-    // Если уже что-то печаталось — останавливаем и начинаем печатать новый код с нуля
     if (codeTypewriterTimer && codeTypewriterTimer->isActive())
         codeTypewriterTimer->stop();
 
@@ -2818,6 +3643,7 @@ void MainWindow::showCodePanel(const QString &code, const QString &title)
     m_typewriterFullText = code;
     m_typewriterPos = 0;
     m_typewriterCursorVisible = true;
+    m_typewriterCursorDrawn = false;
 
     if (!codeTypewriterTimer) {
         codeTypewriterTimer = new QTimer(this);
@@ -2830,7 +3656,7 @@ void MainWindow::showCodePanel(const QString &code, const QString &title)
 
     if (!wasOpen) {
         auto *anim = new QVariantAnimation(this);
-        anim->setDuration(260);
+        anim->setDuration(380);
         anim->setEasingCurve(QEasingCurve::OutCubic);
         anim->setStartValue(0);
         anim->setEndValue(kCodePanelWidth);
@@ -2845,13 +3671,9 @@ void MainWindow::showCodePanel(const QString &code, const QString &title)
     if (codeTypewriterCursorBlink)
         codeTypewriterCursorBlink->start();
 
-    // Печатаем быстрыми "пачками" символов — эффект живого набора текста ИИ.
-    // Интервал короткий (8 мс), поэтому даже большой код печатается за доли секунды,
-    // но глаз успевает заметить анимацию.
     codeTypewriterTimer->start(8);
 }
 
-// Печатает очередную "пачку" символов кода в панель, имитируя быстрый набор текста ИИ
 void MainWindow::advanceCodeTypewriter()
 {
     if (m_typewriterPos >= m_typewriterFullText.size()) {
@@ -2863,9 +3685,15 @@ void MainWindow::advanceCodeTypewriter()
         return;
     }
 
-    // Случайный размер "пачки" символов за тик — придаёт печати живой, неравномерный ритм
-    const int chunk = 2 + QRandomGenerator::global()->bounded(5); // 2..6 символов
-    const int end = qMin(m_typewriterPos + chunk, m_typewriterFullText.size());
+    // убираем курсор перед вставкой, иначе символ «▌» застрянет посреди текста
+    if (m_typewriterCursorDrawn) {
+        m_typewriterCursorVisible = false;
+        updateTypewriterCursorDisplay();
+        m_typewriterCursorVisible = true;
+    }
+
+    const int chunk = 2 + int(QRandomGenerator::global()->bounded(5)); // 2..6 символов
+    const int end = qMin(m_typewriterPos + chunk, int(m_typewriterFullText.size()));
 
     QTextCursor cursor(codePanelBody->document());
     cursor.movePosition(QTextCursor::End);
@@ -2877,7 +3705,6 @@ void MainWindow::advanceCodeTypewriter()
     bar->setValue(bar->maximum());
 }
 
-// Показывает/скрывает мигающий "курсор" в конце уже напечатанного текста
 void MainWindow::updateTypewriterCursorDisplay()
 {
     if (!codePanelBody) return;
@@ -2885,7 +3712,6 @@ void MainWindow::updateTypewriterCursorDisplay()
     QTextCursor cursor(codePanelBody->document());
     cursor.movePosition(QTextCursor::End);
 
-    // Убираем предыдущий символ курсора, если он был нарисован
     if (m_typewriterCursorDrawn) {
         cursor.movePosition(QTextCursor::PreviousCharacter, QTextCursor::KeepAnchor);
         cursor.removeSelectedText();
@@ -2899,7 +3725,6 @@ void MainWindow::updateTypewriterCursorDisplay()
     }
 }
 
-// ИСПРАВЛЕННАЯ ВЕРСИЯ: hideCodePanel с QVariantAnimation
 void MainWindow::hideCodePanel()
 {
     if (!m_codePanelOpen) return;
@@ -2911,7 +3736,7 @@ void MainWindow::hideCodePanel()
         codeTypewriterCursorBlink->stop();
 
     auto *anim = new QVariantAnimation(this);
-    anim->setDuration(260);
+    anim->setDuration(320);
     anim->setEasingCurve(QEasingCurve::OutCubic);
     anim->setStartValue(codePanelContainer->width());
     anim->setEndValue(0);

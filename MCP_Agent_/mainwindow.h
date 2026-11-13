@@ -7,22 +7,22 @@
 #include <QStringList>
 #include <QMap>
 #include <QList>
+#include <QSet>
+#include <QPointer>
 #include <QElapsedTimer>
 #include <QPixmap>
+#include <QImage>
+#include <QSize>
 #include <QEvent>
 
-// >>> ВАЖНО: это базовые классы для наших виджетов ниже (AnimatedIconButton
-// наследует QPushButton, ClickableLabel наследует QLabel и т.д.) — компилятору
-// нужен ПОЛНЫЙ тип, поэтому здесь #include, а не forward declaration.
 #include <QPushButton>
 #include <QLabel>
 #include <QFrame>
 #include <QLineEdit>
 
-#include "agents.h" // agents, DelayedMessage, MessageSource
+#include "agents.h"                // agents, DelayedMessage, MessageSource
+#include "telegramaccountclient.h" // TDLib client for account
 
-// Эти классы используются только как указатели-поля/параметры — форвард-
-// деклараций достаточно.
 class QVBoxLayout;
 class QHBoxLayout;
 class QScrollArea;
@@ -34,28 +34,31 @@ class QVariantAnimation;
 class QGraphicsOpacityEffect;
 class QMouseEvent;
 class QKeyEvent;
+class QShowEvent;
 class QPlainTextEdit;
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
 QT_END_NAMESPACE
 
-// ===========================================================================
-// AnimatedBackdrop — анимированный фон окна (blobs/aurora/particles/starfall/
-// картинка/gif). Используется как central widget-обёртка.
-// ===========================================================================
+// ---------------------------------------------------------------------------
+// Фон окна: живые цветные «блики», которые просвечивают сквозь стекло
+// ---------------------------------------------------------------------------
 class AnimatedBackdrop : public QWidget
 {
     Q_OBJECT
 public:
     explicit AnimatedBackdrop(QWidget *parent = nullptr);
-
     int contentMargin() const { return m_margin; }
+
+    // Маленький (а значит размытый) кадр фона — его «берут» стеклянные панели
+    const QImage &lowRes();
 
 protected:
     void paintEvent(QPaintEvent *event) override;
 
 private:
+    void paintContent(QPainter &painter);
     void paintBlobs(QPainter &painter);
     void paintAurora(QPainter &painter);
     void paintParticles(QPainter &painter);
@@ -67,18 +70,26 @@ private:
     QPixmap m_staticImage;
     qreal m_phase = 0.0;
     int m_margin = 0;
+
+    QImage m_low;
+    QSize m_lowForSize;
+    QElapsedTimer m_lowClock;
 };
 
-// ===========================================================================
-// NetworkBackdrop — фон для панелей/карточек (сетка узлов или звездопад).
-// ===========================================================================
+// ---------------------------------------------------------------------------
+// Стеклянная панель (имя сохранено ради совместимости). Рисует Liquid Glass:
+// размытый фон, тинт, блик, кромку, тень, + опциональное акцентное свечение.
+// ---------------------------------------------------------------------------
 class NetworkBackdrop : public QWidget
 {
     Q_OBJECT
+    Q_PROPERTY(qreal glow READ glow WRITE setGlow)
 public:
-    enum class Surface { Panel, Card, Window };
-
+    enum class Surface { Panel, Card, Window, Pill };
     explicit NetworkBackdrop(Surface surface, QWidget *parent = nullptr);
+
+    qreal glow() const { return m_glow; }
+    void setGlow(qreal g) { m_glow = g; update(); }
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -92,11 +103,9 @@ private:
     bool m_enabled = false;
     QTimer *m_timer = nullptr;
     qreal m_phase = 0.0;
+    qreal m_glow = 0.0;
 };
 
-// ===========================================================================
-// ToggleSwitch — переключатель вкл/выкл с анимацией движения ползунка.
-// ===========================================================================
 class ToggleSwitch : public QWidget
 {
     Q_OBJECT
@@ -123,9 +132,6 @@ private:
     QPropertyAnimation *m_anim = nullptr;
 };
 
-// ===========================================================================
-// AnimatedIconButton — кнопка-иконка с поворотом при наведении.
-// ===========================================================================
 class AnimatedIconButton : public QPushButton
 {
     Q_OBJECT
@@ -154,15 +160,11 @@ private:
     qreal m_spin = 0.0;
 };
 
-// ===========================================================================
-// AgentAvatar — круглый аватар с инициалами и градиентом по имени агента.
-// ===========================================================================
 class AgentAvatar : public QWidget
 {
     Q_OBJECT
 public:
     explicit AgentAvatar(QWidget *parent = nullptr);
-
     void setAgentName(const QString &name);
 
 protected:
@@ -173,9 +175,6 @@ private:
     int m_paletteIndex = 0;
 };
 
-// ===========================================================================
-// ClickableLabel / ClickableFrame — простые кликабельные обёртки.
-// ===========================================================================
 class ClickableLabel : public QLabel
 {
     Q_OBJECT
@@ -195,7 +194,6 @@ class ClickableFrame : public QFrame
     Q_OBJECT
 public:
     explicit ClickableFrame(QWidget *parent = nullptr);
-
     void setSelected(bool selected);
 
 signals:
@@ -212,14 +210,10 @@ protected:
 
 private:
     void applyStyle();
-
     bool m_selected = false;
     bool m_hovered = false;
 };
 
-// ===========================================================================
-// SubagentCard — карточка субагента в боковой панели.
-// ===========================================================================
 class SubagentCard : public QFrame
 {
     Q_OBJECT
@@ -320,10 +314,12 @@ signals:
     void subagentRoleChanged(const QString &id, const QString &role);
     void messageSubmitted(const QString &agentId, const QString &backendName, const QString &text);
     void appTelegramTokenChanged(const QString &token);
-    void appGeminiTokenChanged(const QString &key);
+    void appAiKeyChanged(const QString &apiKey);
+    void appAiModelChanged(const QString &model);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void showEvent(QShowEvent *event) override;
 
 private slots:
     void handleAgentReplyForUI(qint64 chatId, const QList<DelayedMessage> &messages);
@@ -367,20 +363,30 @@ private:
     QWidget *buildSidebar();
     QWidget *buildChatArea();
     QWidget *buildSettingsPage();
+    QWidget *buildCodePanel();
     SubagentCard *createCardWidget(const QString &id, const QString &name);
 
     void switchTheme(const QString &themeName);
     void rebuildUiLive();
     void performUiRebuild();
     void applyCollapsedVisualState();
+    void fadeToPage(int index);
 
     // --- chat / history ---
     void appendHistory(const QString &agentId, const QString &text, bool isUser, const QString &code = QString());
-    void renderMessage(const ChatEntry &entry);
+    void renderMessage(const ChatEntry &entry, bool animate = false);
     void redrawActiveHistory();
     void refreshComposerPlaceholder();
     void receiveAgentReply(const QString &agentId, const QString &text, const QString &code = QString());
     qint64 uiChatIdFor(const QString &agentId);
+    void scrollChatToBottom(bool smooth);
+    void updateTypingIndicator();
+
+    // --- code panel ---
+    void showCodePanel(const QString &code, const QString &title = QString());
+    void hideCodePanel();
+    void advanceCodeTypewriter();
+    void updateTypewriterCursorDisplay();
 
     // --- dialogs ---
     AgentSettingsResult runAgentSettingsDialog(const QString &title, const QString &backendAgentName,
@@ -389,22 +395,25 @@ private:
     // --- constants ---
     static constexpr int kSidebarExpandedWidth = 260;
     static constexpr int kSidebarCollapsedWidth = 64;
+    static constexpr int kCodePanelWidth = 440;
 
     Ui::MainWindow *ui = nullptr;
     agents *m_agentManager = nullptr;
+    TelegramAccountClient *m_telegramAccountClient = nullptr;
 
-    // --- state ---
     QString m_mainAgentName;
     QString m_mainAgentRole;
     QString m_activeAgentId;
     int m_subagentSeq = 0;
     bool m_agentListCollapsed = false;
+    bool m_introPlayed = false;
 
     QMap<QString, SubagentCard *> m_cards;
     QMap<QString, QList<ChatEntry>> m_histories;
     QMap<QString, QString> m_agentFolderNames; // id -> backend folder name ("" == главный агент)
     QMap<QString, bool> m_agentEnabled;
-    QMap<QString, qint64> m_uiChatIds;         // id -> синтетический (отрицательный) chatId для UI-источника
+    QMap<QString, qint64> m_uiChatIds;         // id -> синтетический (отрицательный) chatId
+    QSet<QString> m_pending;                   // агенты, от которых ждём ответ (индикатор «печатает»)
 
     QElapsedTimer startTime;
     QTimer *uptimeTimer = nullptr;
@@ -429,32 +438,31 @@ private:
     QScrollArea *subagentsScroll = nullptr;
     QVBoxLayout *subagentsLayout = nullptr;
     AnimatedIconButton *settingsEntryButton = nullptr;
-    QWidget            *buildCodePanel();
-    void                showCodePanel(const QString &code, const QString &title = QString());
-    void                hideCodePanel();
+
+    // --- code panel ---
     QTimer *codeTypewriterTimer = nullptr;
     QTimer *codeTypewriterCursorBlink = nullptr;
     QString m_typewriterFullText;
     int m_typewriterPos = 0;
     bool m_typewriterCursorVisible = false;
     bool m_typewriterCursorDrawn = false;
+    QFrame *codePanelSeparator = nullptr;
+    QWidget *codePanelContainer = nullptr;
+    QLabel *codePanelTitle = nullptr;
+    QPlainTextEdit *codePanelBody = nullptr;
+    bool m_codePanelOpen = false;
 
-    void advanceCodeTypewriter();
-    void updateTypewriterCursorDisplay();
-    QFrame             *codePanelSeparator = nullptr;
-    QWidget            *codePanelContainer = nullptr;
-    QLabel             *codePanelTitle = nullptr;
-    QPlainTextEdit     *codePanelBody = nullptr;
-    QPropertyAnimation *codePanelAnim = nullptr;
-    bool                m_codePanelOpen = false;
-
-    static constexpr int kCodePanelWidth = 420;
     // --- chat area ---
     AgentAvatar *chatHeaderAvatar = nullptr;
     QLabel *chatHeaderLabel = nullptr;
+    QLabel *chatHeaderSub = nullptr;
     QScrollArea *chatScroll = nullptr;
     QWidget *chatBubblesHost = nullptr;
     QVBoxLayout *chatBubblesLayout = nullptr;
+    QWidget *typingRow = nullptr;
+    QPointer<QPropertyAnimation> m_scrollAnim;
+    bool m_stickBottom = true;
+    bool m_autoScrolling = false;
 
     QFrame *thinkingChip = nullptr;
     QLabel *thinkingDot = nullptr;
@@ -464,6 +472,8 @@ private:
     QVariantAnimation *thinkingPulse = nullptr;
     QTimer *thinkingHideTimer = nullptr;
 
+    NetworkBackdrop *inputGlass = nullptr;
+    QPropertyAnimation *inputGlowAnim = nullptr;
     QPlainTextEdit *messageInput = nullptr;
     QPushButton *sendButton = nullptr;
 };

@@ -1,20 +1,22 @@
-#ifndef PHONENUMBER_H
-#define PHONENUMBER_H
-#include <QString>
-#include <QMap>
+#pragma once
 #include <QObject>
-struct textwithoutnum{
-    QString usertext;
-    QMap<QString, QString> numbers;
+#include <QMap>
+#include <QHash>
+#include <QString>
+#include <QVariant>
+
+struct MaskTable {
+    QMap<QString, QString>  byTag;
+    QHash<QString, QString> byValue;
 };
 
-class phonenumber:public QObject
+class phonenumber : public QObject
 {
-
+    Q_OBJECT
 public:
     explicit phonenumber(QObject *parent = nullptr);
-    textwithoutnum HideNumbers(const QString &userText);
-    QString restoreNumbers(const QString &airesp, QMap<QString,QString> nums) const;
-};
 
-#endif // PHONENUMBER_H
+    QString  mask(const QString &text, MaskTable &table) const;
+    QString  restoreText(const QString &text, const MaskTable &table) const;
+    QVariant restoreDeep(const QVariant &v, const MaskTable &table) const;
+};

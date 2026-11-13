@@ -23,6 +23,7 @@ class TgBot : public QObject
     qint64 offset = 0;
 
     void poll();
+
     void checkreqPhoto(const QJsonObject &response, qint64 chatId, const QString &text);
     void sendSticker(qint64 chatId, const QString &stickerId);
     void sendMessagesDelayed(qint64 chatId,const QList<DelayedMessage> &messages);
@@ -33,7 +34,7 @@ class TgBot : public QObject
     void downloadFile(const QString &fileId, std::function<void(const QByteArray &)> callback);
     void sendPhoto(qint64 chatId, const QString &photoUrl, const QString &caption );
 public:
-    explicit TgBot(QObject *parent = nullptr);
+    explicit TgBot(agents *ag, QObject *parent = nullptr);
     void setToken(const QString &token);
 
 

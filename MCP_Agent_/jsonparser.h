@@ -24,8 +24,9 @@ class JSONParser  {
 public:
 
     static std::optional<QList<AgentCall>> parse(const QJsonObject &response,
-                                                 const QMap<QString, QString> &nums,
-                                                 const phonenumber &phone);
+                                                 const MaskTable &table,
+                                                 const phonenumber &phone,
+                                                 QString *errorOut = nullptr);
 private:
     static QString sanitizeJsonText(const QString &text);
     static QJsonDocument extractFirstJsonObject(const QString &rawText, QJsonParseError *error);

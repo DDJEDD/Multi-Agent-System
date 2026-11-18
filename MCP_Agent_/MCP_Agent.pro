@@ -10,8 +10,9 @@ DEFINES += APP_SRC_DIR=\\\"$$PWD\\\"
 
 SOURCES += \
     agents.cpp \
+    aimanager.cpp \
+    aiprovider.cpp \
     filemanager.cpp \
-    inworldportal.cpp \
     jsonparser.cpp \
     main.cpp \
     mainwindow.cpp \
@@ -23,8 +24,9 @@ SOURCES += \
 
 HEADERS += \
     agents.h \
+    aimanager.h \
+    aiprovider.h \
     filemanager.h \
-    inworldportal.h \
     jsonparser.h \
     liquidglass.h \
     mainwindow.h \

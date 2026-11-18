@@ -10,13 +10,9 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QWidget>
-#include <QLineEdit>
-#include <QMessageBox>
-#include <QWidget>
 #include <QSettings>
 namespace {
 
-// Мінімальний JSON-інтерфейс TDLib (td_json_client.h), який потрібен цьому класу.
 struct TdJsonApi
 {
     using CreateFn = void *(*)();
@@ -35,8 +31,7 @@ struct TdJsonApi
     bool isLoaded() const { return create && send && receive && destroy; }
 };
 
-// Шукає libtdjson (.so / .dylib / .dll) у такому порядку:
-// поруч із програмою, у теці проєкту, у системних шляхах, у Homebrew.
+
 const TdJsonApi &tdJson()
 {
     static const TdJsonApi api = [] {
@@ -49,8 +44,7 @@ const TdJsonApi &tdJson()
 #else
         const QString fileName = QStringLiteral("libtdjson.so");
 #endif
-        // Точне ім'я файлу під ОС: інакше QLibrary може схопити чужий
-        // libtdjson.so (Linux) поруч і не спробувати .dylib.
+
         const QStringList candidates = {
             QCoreApplication::applicationDirPath() + "/" + fileName,
             QCoreApplication::applicationDirPath() + "/../Frameworks/" + fileName,
@@ -107,6 +101,7 @@ qint64 toId(const QJsonValue &value)
 {
     return value.toVariant().toLongLong();
 }
+
 } // namespace
 
 TelegramAccountClient::TelegramAccountClient(QWidget *dialogParent,
@@ -221,14 +216,7 @@ void TelegramAccountClient::startAuthorization(
         showError("Номер телефону не може бути порожнім.");
         return;
     }
-        showError("Номер телефону не може бути порожнім.");
-        return;
-    }
 
-    if (sessionDirectory.trimmed().isEmpty()) {
-        showError("Папка сесії не вказана.");
-        return;
-    }
 
     m_apiId = apiId;
     m_apiHash = apiHash.trimmed();
@@ -260,8 +248,6 @@ void TelegramAccountClient::startAuthorization(
 
     m_receiveTimer->start();
 
-    m_receiveTimer->start();
-
     setStatus("Запуск TDLib...");
 }
 bool TelegramAccountClient::startForAgent(const QString &agentName)
@@ -290,6 +276,7 @@ bool TelegramAccountClient::startForAgent(const QString &agentName)
     const qint32  apiId   = cfg.value("api_id").toInt();
     const QString apiHash = cfg.value("api_hash").toString();
 
+    // Номер не передаємо: сесія вже є
     startAuthorization(apiId, apiHash, QString(), dir);
     return m_started;
 }
@@ -328,11 +315,14 @@ void TelegramAccountClient::processResponse(const QString &json)
     const QJsonObject object = document.object();
     const QString type = object.value("@type").toString();
 
+    // Відповідь на наш запит з @extra (чати, повідомлення, профіль) — обробляємо окремо,
+    // включно з помилками, щоб вони не йшли в авторизаційну гілку.
     const QString extra = object.value("@extra").toString();
     if (!extra.isEmpty() && m_pending.contains(extra)) {
         handleTrackedResponse(m_pending.take(extra), object);
         return;
     }
+
     if (type == "error") {
         const int errorCode = object.value("code").toInt();
         const QString errorMessage =
@@ -371,8 +361,6 @@ void TelegramAccountClient::processResponse(const QString &json)
         return;
     }
 
-    if (type.startsWith("authorizationState")) {
-        processAuthorizationState(object);
     if (type.startsWith("authorizationState")) {
         processAuthorizationState(object);
         return;
@@ -439,14 +427,8 @@ void TelegramAccountClient::processAuthorizationState(
     if (type == "authorizationStateClosed") {
         m_ready = false;
         m_started = false;
-    if (type == "authorizationStateClosed") {
-        m_ready = false;
-        m_started = false;
         m_pending.clear();
         m_chats.clear();
-
-        if (m_receiveTimer)
-            m_receiveTimer->stop();
 
         if (m_receiveTimer)
             m_receiveTimer->stop();
@@ -637,9 +619,6 @@ void TelegramAccountClient::logout()
     request["@type"] = "logOut";
 
     send(request);
-    request["@type"] = "logOut";
-
-    send(request);
 }
 
 // =====================================================================
@@ -663,6 +642,8 @@ void TelegramAccountClient::sendTracked(QJsonObject request, const PendingReques
     send(request);
 }
 
+// ---------- Чати ----------
+
 void TelegramAccountClient::requestChats(int limit)
 {
     if (!ensureReady())
@@ -671,6 +652,8 @@ void TelegramAccountClient::requestChats(int limit)
     QJsonObject chatList;
     chatList["@type"] = "chatListMain";
 
+    // Спочатку просимо TDLib підвантажити чати (він надішле updateNewChat),
+    // потім читаємо впорядкований список id.
     QJsonObject request;
     request["@type"] = "loadChats";
     request["chat_list"] = chatList;
@@ -682,6 +665,7 @@ void TelegramAccountClient::requestChats(int limit)
     sendTracked(request, pending);
 }
 
+// ---------- Повідомлення ----------
 void TelegramAccountClient::requestMessages(qint64 chatId, qint64 fromMessageId, int limit)
 {
     if (!ensureReady())
@@ -775,6 +759,8 @@ QString TelegramAccountClient::messagePreview(const QJsonObject &message)
     return caption.isEmpty() ? label : label + " " + caption;
 }
 
+// ---------- Профіль ----------
+
 void TelegramAccountClient::requestProfile()
 {
     if (!ensureReady())
@@ -828,6 +814,7 @@ void TelegramAccountClient::setUsername(const QString &username)
 
 QJsonObject TelegramAccountClient::normalizeProfile(const QJsonObject &user)
 {
+    // Новий TDLib: usernames.editable_username; старий: username.
     QString username = user.value("usernames").toObject().value("editable_username").toString();
     if (username.isEmpty())
         username = user.value("username").toString();
@@ -840,6 +827,8 @@ QJsonObject TelegramAccountClient::normalizeProfile(const QJsonObject &user)
     profile["phone_number"] = user.value("phone_number").toString();
     return profile;
 }
+
+// ---------- Відповіді на запити з @extra ----------
 
 void TelegramAccountClient::handleTrackedResponse(const PendingRequest &pending,
                                                   const QJsonObject &object)
@@ -855,6 +844,7 @@ void TelegramAccountClient::handleTrackedResponse(const PendingRequest &pending,
 
     switch (pending.kind) {
     case RequestKind::LoadChats: {
+
         QJsonObject chatList;
         chatList["@type"] = "chatListMain";
 
@@ -910,6 +900,7 @@ void TelegramAccountClient::handleTrackedResponse(const PendingRequest &pending,
                 result.append(value);
         }
 
+
         if (result.size() < pending.limit && pending.attempt < 2) {
             const qint64 chatId = pending.chatId;
             const qint64 from = pending.fromMessageId;
@@ -931,6 +922,8 @@ void TelegramAccountClient::handleTrackedResponse(const PendingRequest &pending,
     }
 
     case RequestKind::SendMessage:
+        // Успіх приходить пізніше як updateMessageSendSucceeded;
+        // тут — помилка або підтвердження, що TDLib узяв повідомлення в чергу.
         if (isError) {
             qWarning() << "[Telegram] sendMessage error:" << errorText;
             emit operationFailed(errorText);
@@ -953,13 +946,16 @@ void TelegramAccountClient::handleTrackedResponse(const PendingRequest &pending,
     case RequestKind::SetName:
     case RequestKind::SetUsername:
         if (isError) {
+            // наприклад USERNAME_OCCUPIED, USERNAME_INVALID
             emit operationFailed(errorText);
             return;
         }
-        requestProfile();
+        requestProfile(); // перечитуємо профіль і повідомляємо UI
         return;
     }
 }
+
+// ---------- Оновлення від TDLib ----------
 
 bool TelegramAccountClient::processUpdate(const QString &type, const QJsonObject &object)
 {
@@ -1013,6 +1009,7 @@ bool TelegramAccountClient::processUpdate(const QString &type, const QJsonObject
     }
 
     if (type == "updateMessageSendFailed") {
+        // Новий TDLib: error.{code,message}; старий: error_code / error_message.
         const QJsonObject err = object.value("error").toObject();
         int code = err.value("code").toInt();
         QString text = err.value("message").toString();
@@ -1035,15 +1032,18 @@ bool TelegramAccountClient::processUpdate(const QString &type, const QJsonObject
 
     if (type == "updateNewMessage") {
         const QJsonObject message = object.value("message").toObject();
-        emit messageReceived(message);
+        emit messageReceived(message);   // сырой сигнал как раньше
 
+        // только входящие
         if (message.value("is_outgoing").toBool())
             return true;
 
+        // только от пользователя (не от канала/анонимного админа)
         const QJsonObject sender = message.value("sender_id").toObject();
         if (sender.value("@type").toString() != "messageSenderUser")
             return true;
 
+        // только личные чаты
         const qint64 chatId = toId(message.value("chat_id"));
         const QString chatType = m_chats.value(chatId)
                                      .value("type").toObject().value("@type").toString();
@@ -1051,12 +1051,16 @@ bool TelegramAccountClient::processUpdate(const QString &type, const QJsonObject
             return true;
 
         const qint64 userId = toId(sender.value("user_id"));
+
+        // служебный аккаунт Telegram (коды входа и т.п.)
         if (userId == 777000)
             return true;
 
+        // боты
         if (m_isBot.value(userId, false))
             return true;
 
+        // только реальный контент, без служебных сообщений
         static const QStringList allowed = {
             "messageText", "messagePhoto", "messageVideo", "messageDocument",
             "messageVoiceNote", "messageAudio", "messageSticker", "messageAnimation"
@@ -1065,6 +1069,7 @@ bool TelegramAccountClient::processUpdate(const QString &type, const QJsonObject
         if (!allowed.contains(contentType))
             return true;
 
+        // не отвечаем на старые сообщения, пришедшие после запуска
         const qint64 date = message.value("date").toVariant().toLongLong();
         if (QDateTime::currentSecsSinceEpoch() - date > 60)
             return true;

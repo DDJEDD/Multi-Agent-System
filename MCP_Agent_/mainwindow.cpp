@@ -1,7 +1,5 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
-#include "mainwindow.h"
-#include "ui_mainwindow.h"
 #include "liquidglass.h"
 #include <QComboBox>
 #include <QButtonGroup>
@@ -37,6 +35,7 @@
 #include <QPropertyAnimation>
 #include <QVariantAnimation>
 #include <QEasingCurve>
+#include <QRadioButton>
 #include <QPainter>
 #include <QLinearGradient>
 #include <QRadialGradient>
@@ -59,14 +58,7 @@
 #include <QPointer>
 #include <cmath>
 #include <utility>
-#include <QPointer>
-#include <cmath>
-#include <utility>
 #include <functional>
-#include <QResizeEvent>
-#include <QFormLayout>
-#include <QSharedPointer>
-#include "telegramaccountclient.h" // можно включить, но header уже подключён в mainwindow.h
 
 #include "telegramaccountclient.h"
 
@@ -115,11 +107,11 @@ struct ThemeFamily { QString id; QString label; QString lightId; QString darkId;
 QList<ThemeFamily> themeFamilies()
 {
     return {
-             {"neutral", "Обычная", "light", "dark"},
-             {"pink",    "Pink",    "pink",  "pinkdark"},
-             {"nord",    "Nord",    "nordlight", "nord"},
-             {"sunset",  "Sunset",  "sunsetlight", "sunset"},
-             };
+            {"neutral", "Обычная", "light", "dark"},
+            {"pink",    "Pink",    "pink",  "pinkdark"},
+            {"nord",    "Nord",    "nordlight", "nord"},
+            {"sunset",  "Sunset",  "sunsetlight", "sunset"},
+            };
 }
 
 QString themeDisplayName(const QString &themeId)
@@ -470,12 +462,12 @@ void AnimatedBackdrop::paintStarfall(QPainter &painter)
 {
     struct Meteor { qreal startX, startY, angle, trailLen, speed, offset; QString color; };
     static const QList<Meteor> meteors = {
-                                           {0.10, -0.05, 32.0, 0.20, 0.55, 0.00, kAccent},
-                                           {0.42, -0.08, 28.0, 0.16, 0.42, 0.40, kAccent2},
-                                           {0.68, -0.04, 36.0, 0.22, 0.65, 0.70, kAccent},
-                                           {0.25, -0.10, 30.0, 0.14, 0.38, 0.20, kAccentGreen},
-                                           {0.85, -0.06, 34.0, 0.24, 0.50, 0.85, kAccent2},
-                                           };
+                                          {0.10, -0.05, 32.0, 0.20, 0.55, 0.00, kAccent},
+                                          {0.42, -0.08, 28.0, 0.16, 0.42, 0.40, kAccent2},
+                                          {0.68, -0.04, 36.0, 0.22, 0.65, 0.70, kAccent},
+                                          {0.25, -0.10, 30.0, 0.14, 0.38, 0.20, kAccentGreen},
+                                          {0.85, -0.06, 34.0, 0.24, 0.50, 0.85, kAccent2},
+                                          };
 
     const qreal w = width();
     const qreal h = height();
@@ -589,13 +581,13 @@ void NetworkBackdrop::paintStarfall(QPainter &painter)
 {
     struct Meteor { qreal startX, startY, angle, trailLen, speed, offset; QString color; };
     static const QList<Meteor> meteors = {
-                                           {0.05, -0.06, 32.0, 0.22, 0.50, 0.00, kAccent},
-                                           {0.30, -0.10, 28.0, 0.18, 0.40, 0.35, kAccent2},
-                                           {0.55, -0.05, 34.0, 0.24, 0.58, 0.65, kAccent},
-                                           {0.78, -0.08, 30.0, 0.16, 0.36, 0.15, kAccentGreen},
-                                           {0.92, -0.06, 36.0, 0.20, 0.46, 0.85, kAccent2},
-                                           {0.18, -0.12, 26.0, 0.14, 0.32, 0.55, kAccent},
-                                           };
+                                          {0.05, -0.06, 32.0, 0.22, 0.50, 0.00, kAccent},
+                                          {0.30, -0.10, 28.0, 0.18, 0.40, 0.35, kAccent2},
+                                          {0.55, -0.05, 34.0, 0.24, 0.58, 0.65, kAccent},
+                                          {0.78, -0.08, 30.0, 0.16, 0.36, 0.15, kAccentGreen},
+                                          {0.92, -0.06, 36.0, 0.20, 0.46, 0.85, kAccent2},
+                                          {0.18, -0.12, 26.0, 0.14, 0.32, 0.55, kAccent},
+                                          };
 
     const qreal w = width();
     const qreal h = height();
@@ -637,10 +629,7 @@ void NetworkBackdrop::paintStarfall(QPainter &painter)
 // Сетка узлов больше не используется в интерфейсе; метод оставлен, чтобы не менять заголовок.
 void NetworkBackdrop::paintNodes(QPainter &painter)
 {
-void NetworkBackdrop::paintNodes(QPainter &painter)
-{
     Q_UNUSED(painter);
-}
 }
 
 // ===========================================================================
@@ -2848,8 +2837,10 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
     layout->setContentsMargins(20, 14, 20, 16);
     layout->setSpacing(8);
 
+    // Переключатель страниц General / Services — сегмент-контрол как в iOS
     constexpr int kSwH = 36, kSwPad = 3;
     constexpr int kItemH = kSwH - kSwPad * 2;
+
     struct SwitchBar : QWidget {
         std::function<void()> onResize;
         using QWidget::QWidget;
@@ -2881,6 +2872,7 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
                                   .arg(Glass::css(gt.tint), Glass::css(gt.stroke),
                                        Glass::css(gt.tintStrong),
                                        kTextMuted, kTextMain));
+
     auto *highlight = new QFrame(pageSwitch);
     highlight->setObjectName("cyberHighlight");
     highlight->setAttribute(Qt::WA_TransparentForMouseEvents, true);
@@ -2933,9 +2925,9 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
     auto *promptTabs = new QTabWidget(&dialog);
 
     static const QList<QPair<QString, QString>> promptParts = {
-                                                                {"soul", "Soul"},
-                                                                {"system_prompt", "System Prompt"},
-                                                                };
+                                                               {"soul", "Soul"},
+                                                               {"system_prompt", "System Prompt"},
+                                                               };
 
     QMap<QString, QTextEdit *> promptEdits;
     for (const auto &part : promptParts) {
@@ -2960,14 +2952,14 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
 
     struct ServiceDef { QString id; QString name; };
     static const QList<ServiceDef> kServices = {
-    struct ServiceDef { QString id; QString name; };
-    static const QList<ServiceDef> kServices = {
                                                 {"instagram", "Instagram"},
                                                 {"telegram",  "Telegram"},
                                                 {"whatsapp",  "WhatsApp"},
                                                 {"discord",   "Discord"},
                                                 };
 
+    // service id -> (поле -> значение). Заполняется через диалог "...".
+    // TODO: подгружать/сохранять через m_agentManager вместо локальной мапы.
     auto serviceCreds = QSharedPointer<QMap<QString, QMap<QString, QString>>>::create();
     auto serviceToggles = QSharedPointer<QMap<QString, ToggleSwitch *>>::create();
 
@@ -2989,6 +2981,7 @@ MainWindow::AgentSettingsResult MainWindow::runAgentSettingsDialog(const QString
 
         auto *toggle = new ToggleSwitch(row);
         serviceToggles->insert(svc.id, toggle);
+
         auto *dotsButton = new QPushButton(QString::fromUtf8("\xE2\x8B\xAF"), row); // ⋯
         dotsButton->setStyleSheet(dotsStyle);
         dotsButton->setCursor(Qt::PointingHandCursor);
@@ -3340,113 +3333,298 @@ void MainWindow::openThemeCreator(const QString &themeId)
     saveSettings.setValue("theme", themeId);
 
     rebuildUiLive();
-}
-void MainWindow::openAppSettings()
+}void MainWindow::openAppSettings()
 {
     QSettings settings(QString(APP_SRC_DIR) + "/config.ini", QSettings::IniFormat);
 
+    auto asList = [](const QVariant &v) {
+        return v.typeId() == QMetaType::QStringList ? v.toStringList().join(",") : v.toString();
+    };
+
+    struct Row {
+        QString name, type, host, path;
+        bool custom = false, removed = false;
+        QRadioButton *active = nullptr;
+        QCheckBox *fallback = nullptr;
+        QLineEdit *key = nullptr;
+        QComboBox *model = nullptr;
+        QPushButton *del = nullptr;
+    };
+    using RowPtr = QSharedPointer<Row>;
+
+    struct Builtin { QString name; QStringList models; };
+    const QList<Builtin> builtins = {
+        {"openrouter", {"openai/gpt-4o-mini", "anthropic/claude-sonnet-4.5", "google/gemini-2.5-flash",
+                        "deepseek/deepseek-chat", "meta-llama/llama-3.3-70b-instruct"}},
+        {"openai",     {"gpt-4o-mini", "gpt-4o"}},
+        {"groq",       {"llama-3.3-70b-versatile", "llama-3.1-8b-instant"}},
+        {"deepseek",   {"deepseek-chat", "deepseek-reasoner"}},
+        {"anthropic",  {"claude-sonnet-4-5", "claude-haiku-4-5"}},
+        {"gemini",     {"gemini-2.5-flash", "gemini-2.5-pro"}},
+        {"xai",        {"grok-4", "grok-3", "grok-3-mini"}},   // Grok
+    };
+
     QDialog dialog(this);
     dialog.setWindowTitle("Настройки приложения");
-    dialog.setMinimumWidth(440);
+    dialog.setMinimumWidth(700);
     dialog.setStyleSheet(QString(
                              "QDialog { background-color: %1; }"
-                             "QLabel { color: %2; font-size: 12px; border: none; background: transparent; }"
-                             "QLineEdit {"
-                             "   background-color: %3;"
-                             "   color: %2;"
-                             "   border: 1px solid %4;"
-                             "   border-radius: 12px;"
-                             "   padding: 8px;"
-                             "   font-size: 13px;"
+                             "QLabel, QCheckBox, QRadioButton { color: %2; font-size: 12px; border: none; background: transparent; }"
+                             "QLineEdit, QComboBox {"
+                             "   background-color: %3; color: %2; border: 1px solid %4;"
+                             "   border-radius: 12px; padding: 6px 8px; font-size: 13px;"
                              "}"
-                             "QLineEdit:focus { border-color: %5; }"
-                             "QCheckBox { color: %2; font-size: 12px; }"
+                             "QLineEdit:focus, QComboBox:focus { border-color: %5; }"
+                             "QComboBox QAbstractItemView { background-color: %3; color: %2; selection-background-color: %5; }"
                              "QPushButton {"
-                             "   background-color: %3;"
-                             "   color: %2;"
-                             "   border: 1px solid %4;"
-                             "   border-radius: 12px;"
-                             "   padding: 6px 18px;"
-                             "   font-size: 13px;"
+                             "   background-color: %3; color: %2; border: 1px solid %4;"
+                             "   border-radius: 12px; padding: 6px 18px; font-size: 13px;"
                              "}"
                              "QPushButton:hover { border-color: %5; color: %5; }"
-                             "QComboBox {"
-                             "   background-color: %3; color: %2; border: 1px solid %4;"
-                             "   border-radius: 12px; padding: 8px; font-size: 13px;"
-                             "}"
-                             "QComboBox:focus { border-color: %5; }"
-                             "QComboBox QAbstractItemView { background-color: %3; color: %2; selection-background-color: %5; }"
                              ).arg(kBgWindow, kTextMain, kBgCard, kBorder, kAccent));
 
     auto *layout = new QVBoxLayout(&dialog);
     layout->setContentsMargins(20, 20, 20, 20);
     layout->setSpacing(10);
 
-    auto *tokenLabel = new QLabel("Telegram Bot Token", &dialog);
+    // --- Telegram ---
     auto *tokenEdit = new QLineEdit(settings.value("telegram_token").toString(), &dialog);
     tokenEdit->setPlaceholderText("123456789:AAExampleTokenValue");
     tokenEdit->setEchoMode(QLineEdit::Password);
+    layout->addWidget(new QLabel("Telegram Bot Token", &dialog));
+    layout->addWidget(tokenEdit);
 
-    auto *orKeyLabel = new QLabel("OpenRouter API Key", &dialog);
-    auto *orKeyEdit = new QLineEdit(settings.value("openrouter_api_key").toString(), &dialog);
-    orKeyEdit->setPlaceholderText("sk-or-v1-...");
-    orKeyEdit->setEchoMode(QLineEdit::Password);
+    // --- AI-провайдеры ---
+    auto *aiLabel = new QLabel("AI-ПРОВАЙДЕРЫ: активный · fallback · ключ · модель", &dialog);
+    aiLabel->setStyleSheet(QString("color: %1; font-size: 10px; font-weight: 700; margin-top: 8px;").arg(kTextMuted));
+    layout->addWidget(aiLabel);
 
-    auto *modelLabel = new QLabel("Модель (OpenRouter)", &dialog);
-    auto *modelBox = new QComboBox(&dialog);
-    modelBox->setEditable(true);
-    modelBox->addItems({
-        "openai/gpt-4o-mini",
-        "anthropic/claude-sonnet-4.5",
-        "google/gemini-2.5-flash",
-        "deepseek/deepseek-chat",
-        "meta-llama/llama-3.3-70b-instruct"
+    auto *grid = new QGridLayout();
+    grid->setHorizontalSpacing(10);
+    grid->setVerticalSpacing(8);
+    grid->setColumnStretch(2, 1);
+    layout->addLayout(grid);
+
+    auto *activeGroup = new QButtonGroup(&dialog);
+    QList<RowPtr> rows;
+    int gridRow = 0;
+
+    const QString activeName = asList(settings.value("ai/provider")).trimmed();
+    const QStringList fbList = asList(settings.value("ai/fallback")).split(',', Qt::SkipEmptyParts);
+
+    auto addRow = [&](const RowPtr &row, const QString &key, const QString &model,
+                      const QStringList &models, bool active, bool fallback) {
+        row->active = new QRadioButton(row->name, &dialog);
+        row->active->setMinimumWidth(110);
+        activeGroup->addButton(row->active);
+        row->active->setChecked(active);
+
+        row->fallback = new QCheckBox("fallback", &dialog);
+        row->fallback->setChecked(fallback);
+
+        row->key = new QLineEdit(key, &dialog);
+        row->key->setEchoMode(QLineEdit::Password);
+        row->key->setPlaceholderText("API key");
+
+        row->model = new QComboBox(&dialog);
+        row->model->setEditable(true);
+        row->model->addItems(models);
+        row->model->setCurrentText(model);
+        row->model->setMinimumWidth(210);
+
+        grid->addWidget(row->active,   gridRow, 0);
+        grid->addWidget(row->fallback, gridRow, 1);
+        grid->addWidget(row->key,      gridRow, 2);
+        grid->addWidget(row->model,    gridRow, 3);
+
+        if (row->custom) {
+            row->del = new QPushButton("✕", &dialog);
+            row->del->setFixedWidth(34);
+            row->del->setToolTip("Удалить провайдера");
+            grid->addWidget(row->del, gridRow, 4);
+            connect(row->del, &QPushButton::clicked, &dialog, [row, activeGroup]() {
+                row->removed = true;
+                activeGroup->removeButton(row->active);
+                for (QWidget *w : {static_cast<QWidget *>(row->active), static_cast<QWidget *>(row->fallback),
+                                   static_cast<QWidget *>(row->key), static_cast<QWidget *>(row->model),
+                                   static_cast<QWidget *>(row->del)})
+                    w->hide();
+            });
+        }
+        rows.append(row);
+        ++gridRow;
+    };
+
+    // встроенные
+    QStringList builtinNames;
+    for (const auto &b : builtins) {
+        builtinNames << b.name;
+        auto row = RowPtr::create();
+        row->name = b.name;
+
+        settings.beginGroup("provider_" + b.name);
+        QString key = asList(settings.value("api_key")).trimmed();
+        QString model = asList(settings.value("model")).trimmed();
+        settings.endGroup();
+        if (b.name == "openrouter") {                      // старый формат конфига
+            if (key.isEmpty())   key = settings.value("openrouter_api_key").toString();
+            if (model.isEmpty()) model = settings.value("ai_model", "openai/gpt-4o-mini").toString();
+        }
+        addRow(row, key, model, b.models,
+               b.name == activeName || (activeName.isEmpty() && b.name == "openrouter"),
+               fbList.contains(b.name));
+    }
+
+    // добавленные вручную (уже лежат в config.ini)
+    for (const QString &g : settings.childGroups()) {
+        if (!g.startsWith("provider_")) continue;
+        const QString n = g.mid(9);
+        if (builtinNames.contains(n)) continue;
+
+        auto row = RowPtr::create();
+        row->name = n;
+        row->custom = true;
+        settings.beginGroup(g);
+        row->type = asList(settings.value("type")).trimmed();
+        row->host = asList(settings.value("host")).trimmed();
+        row->path = asList(settings.value("path")).trimmed();
+        const QString key = asList(settings.value("api_key")).trimmed();
+        const QString model = asList(settings.value("model")).trimmed();
+        settings.endGroup();
+        addRow(row, key, model, {}, n == activeName, fbList.contains(n));
+    }
+
+    // --- кнопка «Добавить провайдера» ---
+    auto *addBtn = new QPushButton("+ Добавить провайдера", &dialog);
+    addBtn->setCursor(Qt::PointingHandCursor);
+    layout->addWidget(addBtn, 0, Qt::AlignLeft);
+
+    connect(addBtn, &QPushButton::clicked, &dialog, [&]() {
+        QDialog d(&dialog);
+        d.setWindowTitle("Новый провайдер");
+        d.setMinimumWidth(420);
+        auto *form = new QFormLayout(&d);
+        form->setContentsMargins(16, 16, 16, 16);
+
+        auto *nameEdit = new QLineEdit(&d);
+        nameEdit->setPlaceholderText("например: together");
+        auto *typeBox = new QComboBox(&d);
+        typeBox->addItems({"openai", "anthropic", "gemini"});
+        auto *hostEdit = new QLineEdit(&d);
+        hostEdit->setPlaceholderText("api.together.xyz");
+        auto *pathEdit = new QLineEdit("/v1/chat/completions", &d);
+        auto *keyEdit = new QLineEdit(&d);
+        keyEdit->setPlaceholderText("API key");
+        auto *modelEdit = new QLineEdit(&d);
+        modelEdit->setPlaceholderText("model id");
+
+        form->addRow("Имя", nameEdit);
+        form->addRow("Тип API", typeBox);
+        form->addRow("Host", hostEdit);
+        form->addRow("Path", pathEdit);
+        form->addRow("API key", keyEdit);
+        form->addRow("Модель", modelEdit);
+
+        auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &d);
+        form->addRow(bb);
+        connect(bb, &QDialogButtonBox::accepted, &d, &QDialog::accept);
+        connect(bb, &QDialogButtonBox::rejected, &d, &QDialog::reject);
+        connect(typeBox, &QComboBox::currentTextChanged, &d, [pathEdit](const QString &t) {
+            if (t == "anthropic")   pathEdit->setText("/v1/messages");
+            else if (t == "gemini") pathEdit->clear();     // путь строится из модели
+            else                    pathEdit->setText("/v1/chat/completions");
+        });
+
+        if (d.exec() != QDialog::Accepted) return;
+
+        const QString name = nameEdit->text().trimmed().toLower();
+        static const QRegularExpression okName("^[a-z0-9_-]+$");
+        bool exists = false;
+        for (const auto &r : std::as_const(rows))
+            if (!r->removed && r->name == name) exists = true;
+
+        if (!okName.match(name).hasMatch() || exists || hostEdit->text().trimmed().isEmpty()) {
+            QMessageBox::warning(&dialog, "Провайдер",
+                                 "Имя: только a-z, 0-9, _ и -, и оно должно быть уникальным. Host обязателен.");
+            return;
+        }
+
+        auto row = RowPtr::create();
+        row->name = name;
+        row->custom = true;
+        row->type = typeBox->currentText();
+        row->host = hostEdit->text().trimmed();
+        row->path = pathEdit->text().trimmed();
+        addRow(row, keyEdit->text().trimmed(), modelEdit->text().trimmed(), {}, false, false);
     });
-    modelBox->setCurrentText(settings.value("ai_model", "openai/gpt-4o-mini").toString());
 
     auto *showCheckbox = new QCheckBox("Показать значения", &dialog);
-    connect(showCheckbox, &QCheckBox::toggled, &dialog, [tokenEdit, orKeyEdit](bool checked) {
+    connect(showCheckbox, &QCheckBox::toggled, &dialog, [&](bool checked) {
         const auto mode = checked ? QLineEdit::Normal : QLineEdit::Password;
         tokenEdit->setEchoMode(mode);
-        orKeyEdit->setEchoMode(mode);
+        for (const auto &r : std::as_const(rows)) r->key->setEchoMode(mode);
     });
-    });
+    layout->addWidget(showCheckbox);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dialog);
     buttons->button(QDialogButtonBox::Save)->setText("Сохранить");
     buttons->button(QDialogButtonBox::Cancel)->setText("Отмена");
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-
-    layout->addWidget(tokenLabel);
-    layout->addWidget(tokenEdit);
-    layout->addWidget(orKeyLabel);
-    layout->addWidget(orKeyEdit);
-    layout->addWidget(modelLabel);
-    layout->addWidget(modelBox);
-    layout->addWidget(showCheckbox);
     layout->addWidget(buttons);
 
     if (dialog.exec() != QDialog::Accepted)
         return;
 
     const QString botToken = tokenEdit->text().trimmed();
-    const QString aiKey = orKeyEdit->text().trimmed();
-    const QString aiModel = modelBox->currentText().trimmed();
-
     settings.setValue("telegram_token", botToken);
-    settings.setValue("openrouter_api_key", aiKey);
-    if (!aiModel.isEmpty())
-        settings.setValue("ai_model", aiModel);
+
+    QString newActive, orKey, orModel;
+    QStringList newFallback;
+
+    for (const auto &row : std::as_const(rows)) {
+        const QString group = "provider_" + row->name;
+        if (row->removed) {
+            settings.remove(group);
+            continue;
+        }
+
+        const QString key = row->key->text().trimmed();
+        const QString model = row->model->currentText().trimmed();
+
+        settings.beginGroup(group);
+        if (row->custom) {
+            settings.setValue("type", row->type);
+            settings.setValue("host", row->host);
+            settings.setValue("path", row->path);
+        }
+        if (key.isEmpty())   settings.remove("api_key"); else settings.setValue("api_key", key);
+        if (model.isEmpty()) settings.remove("model");   else settings.setValue("model", model);
+        settings.endGroup();
+
+        if (row->active->isChecked())        newActive = row->name;
+        else if (row->fallback->isChecked()) newFallback << row->name;
+
+        if (row->name == "openrouter") { orKey = key; orModel = model; }
+    }
+
+    if (newActive.isEmpty() && !rows.isEmpty())
+        newActive = "openrouter";
+    settings.setValue("ai/provider", newActive);
+    settings.setValue("ai/fallback", newFallback.join(","));
+
     settings.remove("cf_account_id");
     settings.remove("cf_api_token");
     settings.remove("groq_api_key");
     settings.remove("gemini_api_key");
+    settings.remove("openrouter_api_key");
+    settings.remove("ai_model");
+
+    settings.sync();
+    m_agentManager->reloadAi();
 
     emit appTelegramTokenChanged(botToken);
-    emit appAiKeyChanged(aiKey);
-    if (!aiModel.isEmpty())
-        emit appAiModelChanged(aiModel);
+}
 void MainWindow::openMainAgentSettings()
 {
     const QString oldBackendName = m_agentFolderNames.value(QString(), m_mainAgentName);

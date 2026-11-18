@@ -75,28 +75,48 @@ static bool decodeChunkedBody(const QByteArray &chunked, QByteArray &outDecoded)
         pos += 2;
     }
     return false;
-}
-void Requests::apiCall(QObject *parent, const QString &host, const QString &path,  const QString &method,
+}void Requests::apiCall(QObject *parent, const QString &host, const QString &path, const QString &method,
                        const QJsonObject &body,
                        const QMap<QString, QString> &headers,
                        std::function<void(const QJsonObject &)> callback)
 {
     auto *socket = new QSslSocket(parent);
 
-    // Обязательно инициализируем чистый буфер для каждого нового запроса
     socket->setProperty("_buf", QByteArray());
+    socket->setProperty("_done", false);
+
+    // вызывает callback ровно один раз
+    auto finish = [socket, callback](const QJsonObject &obj) {
+        if (socket->property("_done").toBool())
+            return;
+        socket->setProperty("_done", true);
+        callback(obj);
+        socket->deleteLater();
+    };
 
     QObject::connect(socket, &QSslSocket::encrypted, socket, [socket, host, path, body, headers, method]() {
-        const QByteArray payload = QJsonDocument(body).toJson(QJsonDocument::Compact);
+        const bool isGet = method.compare("GET", Qt::CaseInsensitive) == 0;
+        const QByteArray payload = isGet ? QByteArray()
+                                         : QJsonDocument(body).toJson(QJsonDocument::Compact);
+
         QByteArray request;
         request += method.toUtf8() + " " + path.toUtf8() + " HTTP/1.1\r\n";
         request += "Host: " + host.toUtf8() + "\r\n";
-        request += "Content-Type: application/json\r\n";
-        request += "Content-Length: " + QByteArray::number(payload.size()) + "\r\n";
+        if (!isGet) {
+            request += "Content-Type: application/json\r\n";
+            request += "Content-Length: " + QByteArray::number(payload.size()) + "\r\n";
+        }
         request += "Accept-Encoding: identity\r\n";
 
         for (auto it = headers.begin(); it != headers.end(); ++it) {
-            request += it.key().toUtf8() + ": " + it.value().toUtf8() + "\r\n";
+            const QString k = it.key();
+            if (k.compare("Content-Type", Qt::CaseInsensitive) == 0
+                || k.compare("Content-Length", Qt::CaseInsensitive) == 0
+                || k.compare("Host", Qt::CaseInsensitive) == 0
+                || k.compare("Connection", Qt::CaseInsensitive) == 0
+                || k.compare("Accept-Encoding", Qt::CaseInsensitive) == 0)
+                continue;
+            request += k.toUtf8() + ": " + it.value().toUtf8() + "\r\n";
         }
 
         request += "Connection: close\r\n\r\n";
@@ -111,29 +131,26 @@ void Requests::apiCall(QObject *parent, const QString &host, const QString &path
         socket->setProperty("_buf", buf);
     });
 
-    QObject::connect(socket, &QSslSocket::disconnected, socket, [socket, callback]() {
+    QObject::connect(socket, &QSslSocket::disconnected, socket, [socket, finish]() {
         const QByteArray data = socket->property("_buf").toByteArray();
         const int sep = data.indexOf("\r\n\r\n");
 
         if (sep == -1) {
             qWarning() << "Requests: не найден конец заголовков HTTP-ответа";
-            callback(QJsonObject());
-            socket->deleteLater();
+            finish(QJsonObject());
             return;
         }
 
         const QByteArray headerBlock = data.left(sep);
-        QByteArray rawBody = data.mid(sep + 4);
+        const QByteArray rawBody = data.mid(sep + 4);
 
-        const bool isChunked = headerBlock.contains("Transfer-Encoding: chunked")
-                               || headerBlock.contains("transfer-encoding: chunked");
+        const bool isChunked = headerBlock.toLower().contains("transfer-encoding: chunked");
 
         QByteArray finalBody;
         if (isChunked) {
             if (!decodeChunkedBody(rawBody, finalBody)) {
                 qWarning() << "Requests: не удалось декодировать chunked-тело ответа";
-                callback(QJsonObject());
-                socket->deleteLater();
+                finish(QJsonObject());
                 return;
             }
         } else {
@@ -151,20 +168,15 @@ void Requests::apiCall(QObject *parent, const QString &host, const QString &path
             responseJson["raw_content"] = QString::fromUtf8(finalBody);
         }
 
-        callback(responseJson);
-        socket->deleteLater();
+        finish(responseJson);
     });
 
-    QObject::connect(socket, &QAbstractSocket::errorOccurred, socket, [socket, callback](QAbstractSocket::SocketError err) {
-        if (err != QAbstractSocket::RemoteHostClosedError) {
+    QObject::connect(socket, &QAbstractSocket::errorOccurred, socket, [socket, finish](QAbstractSocket::SocketError err) {
+        if (err != QAbstractSocket::RemoteHostClosedError)
             qWarning() << "Requests: Socket error:" << socket->errorString();
-        }
 
-
-        if (socket->property("_buf").toByteArray().isEmpty()) {
-            callback(QJsonObject());
-            socket->deleteLater();
-        }
+        if (socket->property("_buf").toByteArray().isEmpty())
+            finish(QJsonObject());
     });
 
     socket->connectToHostEncrypted(host, 443);

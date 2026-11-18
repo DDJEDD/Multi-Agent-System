@@ -3,6 +3,8 @@
 #include <QObject>
 #include <QFile>
 #include <QTextStream>
+#include <QList>
+#include <QPair>
 #include <QDir>
 class FileManager
 {
@@ -14,6 +16,7 @@ public:
     static bool deleteRepo(const QString &agentName, QDir dirEngine);
     static void renameDirectory(const QString &oldpath, const QString &dirpath);
     static QString getFile(const QString &fileToGet, QDir dirEngine);
+    static QList<QPair<QString, QString>> GetOldPairs(qint64 userid, int maxPairs = 10);
 };
 
 #endif // MCP_H

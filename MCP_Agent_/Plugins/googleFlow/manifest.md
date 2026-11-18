@@ -2,8 +2,8 @@
   "plugin_name": "gflow",
   "exec": "python",
   "args": ["gflow_plugin.py"],
-  "timeout_ms": 900000,
-  "version": "1.1.0",
+  "timeout_ms": 3600000,
+  "version": "1.3.0",
   "description": "Плагин для генерации картинок и видео через Google Flow (неофициальный gflow-cli)",
   "functions": [
     {
@@ -13,7 +13,7 @@
     },
     {
       "name": "generateVideo",
-      "description": "Генерирует видео по текстовому промпту (aspect, duration, model), тратит кредиты, занимает несколько минут",
+      "description": "Генерирует видео по текстовому промпту (aspect, resolution, duration, model, filename), тратит кредиты, занимает несколько минут",
       "handler_type": "gflow_video"
     }
   ]

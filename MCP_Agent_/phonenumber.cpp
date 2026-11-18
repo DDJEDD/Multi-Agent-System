@@ -32,12 +32,21 @@ QString phonenumber::mask(const QString &text, MaskTable &table) const
 
 QString phonenumber::restoreText(const QString &text, const MaskTable &table) const
 {
-    QString s = text;
-    for (auto it = table.byTag.cbegin(); it != table.byTag.cend(); ++it)
-        s.replace(it.key(), it.value());
-    return s;
-}
+    static const QRegularExpression tagRe(QStringLiteral(R"((?<!\w)\[?ID_(\d+)\]?)"));
 
+    QString out;
+    int last = 0;
+    auto it = tagRe.globalMatch(text);
+    while (it.hasNext()) {
+        const auto m = it.next();
+        const QString tag = QStringLiteral("[ID_%1]").arg(m.captured(1));
+        if (!table.byTag.contains(tag))
+            continue;
+        out += text.mid(last, m.capturedStart() - last) + table.byTag.value(tag);
+        last = m.capturedEnd();
+    }
+    return out + text.mid(last);
+}
 QVariant phonenumber::restoreDeep(const QVariant &v, const MaskTable &table) const
 {
     switch (v.typeId()) {

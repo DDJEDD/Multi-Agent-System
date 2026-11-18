@@ -30,7 +30,7 @@ inline Tokens &mutableTokens()
     return t;
 }
 
-// Континуальный угол (squircle): плавнее обычной дуги, как у иконок и панелей iOS
+
 inline QPainterPath squircle(const QRectF &r, qreal radius)
 {
     const qreal rr = qMin(radius, qMin(r.width(), r.height()) / 2.0);

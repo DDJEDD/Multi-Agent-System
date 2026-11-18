@@ -23,7 +23,6 @@
 #include "agents.h"                // agents, DelayedMessage, MessageSource
 #include "telegramaccountclient.h" // TDLib client for account
 
-// Форвард-декларации для важких UI-класів
 class QVBoxLayout;
 class QHBoxLayout;
 class QScrollArea;
@@ -42,7 +41,6 @@ QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
 QT_END_NAMESPACE
 
-// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Фон окна: живые цветные «блики», которые просвечивают сквозь стекло
 // ---------------------------------------------------------------------------
@@ -383,6 +381,7 @@ private:
     qint64 uiChatIdFor(const QString &agentId);
     void scrollChatToBottom(bool smooth);
     void updateTypingIndicator();
+
 
     // --- code panel ---
     void showCodePanel(const QString &code, const QString &title = QString());
